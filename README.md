@@ -13,7 +13,7 @@ The server decides every step of all three, so a modified client can't skip the 
 
 ## Requirements
 
-- [tr_core](https://github.com/Thedshadow25/tr_core) 1.3.0 or newer. 
+- [tr_core](https://github.com/TR-Scripts67/tr_core) 1.3.0 or newer. 
 - OneSync.
 - ESX, QBCore or Qbox, with ox_inventory or qb-inventory. ox_target or qb-target is optional (it adds
   "Pick the lock" on door handles and "Siphon fuel" on cars). tr_core finds what the server runs by itself.
