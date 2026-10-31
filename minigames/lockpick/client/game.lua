@@ -1,28 +1,3 @@
---[[
-    The lockpick minigame: a Lishi 2-in-1 pick in a car door's wafer lock.
-
-        local result, extra = Lockpick.run(vehicle, door, session)
-
-    How a wafer lock is picked, and how this plays:
-      - RMB holds light turning tension on the plug. Under tension one wafer at a time binds.
-      - A/D or the scroll wheel moves the pick between the lock's 8 wafer positions (the knob slides
-        one detent per position). Some positions are empty on cheaper locks.
-      - Holding LMB and pushing the mouse up lifts the wafer at the pick. A free wafer is springy. A
-        binding one is stiff and only gives slowly; lifted to its shear line it clicks, the plug
-        turns a hair and the wafer stays set. Then the next one binds.
-      - Pushing a set wafer past the line oversets it: it jams until the tension is let off, and
-        letting off drops every set wafer.
-      - Pushing hard against a wafer that won't move (the pressure meter in the red) bends the
-        pick. The third bend snaps it and the tip stays in the lock.
-      - The reading plate on the tool shows where the pick is: the red pointer's column is the
-        wafer, its height on the depth lines is the lift.
-
-    The server knows the lock (which positions are filled, each wafer's depth, the binding order) and
-    tells this file what the pick feels at a wafer when the player first touches it.
-
-    result: 'opened' (extra = alarm armed), 'failed' (extra = item lost), 'cancelled' or a reason.
-]]
-
 local cfg = Config.lockpick
 local Rig = Lockpick.rig
 local function t(key, vars) return TR.locale.t('lockpick.' .. key, vars) end
@@ -32,82 +7,84 @@ Game.__index = Game
 
 local POSITIONS = #Rig.wafers
 local STEP = Rig.depthStep
-local MAX_LIFT = (Rig.depths + 0.9) * STEP -- the hook's travel: a little past the deepest line
+local MAX_LIFT = (Rig.depths + 0.9) * STEP -- a little past the deepest line
 local SPAN = 0.0012           -- metres the finger can get ahead of a wafer that doesn't move: full pressure
-local AHEAD = SPAN * 1.3      -- the finger can't get further ahead than this
-local PENDING_LIFT = 0.0006   -- how far a wafer moves before the server has said what it is
-local STRAIN_FROM = 0.75      -- pressure where the pick starts to bend
+local AHEAD = SPAN * 1.3
+local PENDING_LIFT = 0.0006   -- metres a wafer moves before the server has said what it is
+local STRAIN_FROM = 0.75
 local LIFT_GAIN = 0.004       -- metres of lift per unit of mouse movement
-local TENSION_ROLL = 2.2      -- degrees the plug turns under tension
-local GIVE_ROLL = 0.5         -- and a little more for every set wafer
-local LEVER_OPEN = 52.0       -- degrees the lever swings out to uncover the reading plate
-local INSERT_FROM = -0.036    -- the tool's Y before it goes in: blade tip just outside the keyway
-local SHUTTER_OPEN = 88.0     -- degrees the dust shutter swings in when the blade pushes it
+local TENSION_ROLL = 2.2      -- degrees
+local GIVE_ROLL = 0.5         -- degrees more for every set wafer
+local LEVER_OPEN = 52.0       -- degrees
+local INSERT_FROM = -0.036    -- blade tip just outside the keyway
+local SHUTTER_OPEN = 88.0     -- degrees
 
 local KEY = { lift = 24, tension = 25, deeper = { 241, 35 }, shallower = { 242, 34 }, pause = 200, back = 194 }
 local ANIM_DICT, ANIM = 'anim@amb@clubhouse@tutorial@bkr_tut_ig3@', 'machinic_loop_mechandplayer'
-local LOOPS = { 'scrape' } -- their ids are 'lockpick:<loop>'
+local LOOPS = { 'scrape' } -- ids are 'lockpick:<loop>'
 
 local function ease(k)
     k = Clamp(k, 0.0, 1.0)
     return k * k * (3.0 - 2.0 * k)
 end
 
--- Sound effects play on the resource's page (TR.ui.sound); names are listed in engine/client/sounds.lua.
 local function sound(name)
     TR.ui.sound.play(name, Config.volume)
 
-    -- Players nearby hear it too (TR.mirror).
     local game = Lockpick.current
     if game and game.mirror then game.mirror:sound(name) end
 end
 
--- Setup -----------------------------------------------------------------------------------------
-
 function Game.new(vehicle, door, session, offset, pitch, yaw)
+    local housing, cam, stand = 'tr_lp_bezel', cfg.camera, nil
+    if door == 'bike' then housing, cam, stand = Lockpick.bikeView(vehicle, offset) end
+
     return setmetatable({
         vehicle = vehicle,
         door = door,
         session = session,
         scene = Scene.new(vehicle, offset, pitch, yaw),
+        housing = housing,
+        cam = cam,
+        stand = stand, -- in the vehicle's space; nil: in front of the lock
         phase = 'insert',
         phaseAt = GetGameTimer(),
         now = GetGameTimer(),
         running = true,
         queue = {},
 
-        pos = POSITIONS, -- the pick rests at the deepest wafer
-        slide = 0.0,     -- the pick's Y in tool space, eased toward its position
-        finger = 0.0,    -- where the player is pushing the hook to
-        lift = 0.0,      -- where the hook is
+        pos = POSITIONS, -- the deepest wafer
+        slide = 0.0,
+        finger = 0.0,
+        lift = 0.0,
         pressure = 0.0,
         strain = 0.0,
-        rate = 0.0,      -- how fast a stiff wafer is giving, for the scrape
+        rate = 0.0,
 
         tension = false,
         epoch = 0,       -- one per grip on the tension; the server drops set wafers on a new one
-        roll = 0.0,      -- degrees the plug (and the tool in it) has turned
+        roll = 0.0,      -- degrees
         insert = INSERT_FROM,
         swing = 0.0,
         shutter = 0.0,
 
-        feel = {},       -- position -> { key, kind } what the server said the pick feels there
-        empty = {},      -- positions known to have no wafer
-        depths = {},     -- depth of every wafer felt binding or set: the player's decode
+        feel = {},       -- position -> { key, kind }
+        empty = {},
+        depths = {},
         set = {},
         setCount = 0,
-        jammed = nil,    -- position of an overset wafer
+        jammed = nil,
         toldEmpty = {},
         strikes = 0,
     }, Game)
 end
 
----Walks the player up to the door, facing the lock.
 function Game:approach()
     local ped = PlayerPedId()
     local lock = self.scene:toWorld(vec3(0.0, 0.0, 0.0))
     local out = Mat.apply(self.scene.rot, vec3(0.0, -1.0, 0.0))
     local spot = lock + Vec.normalize(vec3(out.x, out.y, 0.0)) * 0.55
+    if self.stand then spot = GetOffsetFromEntityInWorldCoords(self.vehicle, self.stand.x, self.stand.y, self.stand.z) end
     local heading = GetHeadingFromVector_2d(lock.x - spot.x, lock.y - spot.y)
     local function away()
         local c = GetEntityCoords(ped)
@@ -135,13 +112,13 @@ end
 
 function Game:setup()
     local scene = self.scene
-    scene:preload({ 'tr_lp_bezel', 'tr_lp_plug', 'tr_lp_shutter', 'tr_lp_lishi', 'tr_lp_lishi_pick', 'tr_lp_lishi_lever',
+    scene:preload({ self.housing, 'tr_lp_plug', 'tr_lp_shutter', 'tr_lp_lishi', 'tr_lp_lishi_pick', 'tr_lp_lishi_lever',
         'tr_lp_pick_broken' })
 
     RequestAnimDict(ANIM_DICT)
     self:approach()
 
-    scene:spawn('bezel', 'tr_lp_bezel')
+    scene:spawn('bezel', self.housing)
     scene:spawn('plug', 'tr_lp_plug')
     scene:spawn('shutter', 'tr_lp_shutter', Rig.shutterHinge)
     scene:spawn('lishi', 'tr_lp_lishi')
@@ -149,7 +126,7 @@ function Game:setup()
     scene:spawn('lever', 'tr_lp_lishi_lever')
     self:animate(0.0)
 
-    local cam = cfg.camera
+    local cam = self.cam
     scene:createCamera(cam.pos, cam.target, cam.fov)
 
     local deadline = GetGameTimer() + 2000
@@ -157,7 +134,7 @@ function Game:setup()
     TaskPlayAnim(PlayerPedId(), ANIM_DICT, ANIM, 3.0, -3.0, -1, 1, 0.0, false, false, false)
 
     self.phase, self.phaseAt = 'insert', GetGameTimer()
-    sound('lp_insert')
+    sound(self.door == 'bike' and 'lp_bike_insert' or 'lp_insert')
 end
 
 function Game:cleanup()
@@ -168,12 +145,11 @@ function Game:cleanup()
     RemoveAnimDict(ANIM_DICT)
 end
 
--- Server requests -----------------------------------------------------------------------------
 -- Sent one at a time, in order, without blocking the frame loop.
 
----@param name string callback name
+---@param name string
 ---@param args any[]
----@param cb? fun(...) gets the callback's results
+---@param cb? fun(...)
 ---@param lost? fun() called when the request didn't get through (timeout, rate limit)
 function Game:request(name, args, cb, lost)
     self.queue[#self.queue + 1] = { name = name, args = args, cb = cb, lost = lost }
@@ -190,7 +166,6 @@ function Game:request(name, args, cb, lost)
                 -- Not delivered: nothing changed on the server.
                 if job.lost then job.lost() end
             elseif result[1] == false then
-                -- The server ended the attempt (expired, moved away, ...).
                 self:finish(result[2] or 'no_session')
                 break
             elseif job.cb then
@@ -201,8 +176,6 @@ function Game:request(name, args, cb, lost)
     end)
 end
 
--- Endings -------------------------------------------------------------------------------------
-
 function Game:finish(result, extra, delay)
     if self.ending then return end
     self.ending = true
@@ -210,7 +183,6 @@ function Game:finish(result, extra, delay)
     self.endAt = self.now + (delay or 0)
 end
 
----Takes the tool out of the lock, then ends with `result`.
 function Game:leave(result, extra)
     if self.phase == 'withdraw' then return end
     self.phase, self.phaseAt = 'withdraw', self.now
@@ -229,15 +201,11 @@ function Game:flash(text, tone, duration)
     TR.ui.hud.flash(text, tone, duration)
 end
 
--- What the pick feels ------------------------------------------------------------------------
-
----Everything the server's answer depends on: tension (and which grip), set wafers, a jam.
 function Game:feelKey()
     return ('%d:%d:%d'):format(self.tension and self.epoch or 0, self.setCount, self.jammed or 0)
 end
 
----What the hook feels at position `pos`: 'empty', 'spring', 'binding', 'set', 'stuck' or
----'pending' while the server is asked (the first touch after anything changed).
+-- 'empty', 'spring', 'binding', 'set', 'stuck' or 'pending' while the server is asked
 function Game:feelAt(pos)
     if self.empty[pos] then return 'empty' end
     if self.jammed == pos then return 'stuck' end
@@ -265,10 +233,7 @@ function Game:feelAt(pos)
     return 'pending'
 end
 
----Height of a wafer's shear line above the hook's rest.
 local function shearLine(depth) return depth * STEP end
-
--- Actions ---------------------------------------------------------------------------------------
 
 function Game:setTension(on)
     if on == self.tension then return end
@@ -280,7 +245,6 @@ function Game:setTension(on)
         return
     end
 
-    -- Letting off: the plug springs back and every set wafer drops.
     local dropped = self.setCount > 0 or self.jammed
     self.set, self.setCount, self.jammed = {}, 0, nil
     if dropped then
@@ -292,12 +256,11 @@ end
 function Game:move(step)
     local pos = Clamp(self.pos + step, 1, POSITIONS)
     sound('lp_detent')
-    if pos == self.pos then return end -- the knob against its stop
+    if pos == self.pos then return end
     self.pos = pos
     self.strain = 0.0
 end
 
----The binding wafer reached its shear line: it clicks and stays up, the plug gives a hair.
 function Game:setWafer(pos)
     self.set[pos] = true
     self.setCount = self.setCount + 1
@@ -314,7 +277,6 @@ function Game:setWafer(pos)
     end)
 end
 
----Pushed past the shear line: the wafer jams the plug until the tension is let off.
 function Game:overset(pos)
     if self.set[pos] then
         self.set[pos] = nil
@@ -326,10 +288,9 @@ function Game:overset(pos)
     self:request('tr_minigames:lockpick:overset', { pos, self.epoch })
 end
 
----Forced a wafer that wouldn't move: the pick bends. The third bend snaps it.
 function Game:bend()
     self.strain, self.finger = 0.0, 0.0
-    self.gripLost = true -- let go of LMB before lifting again
+    self.gripLost = true
     self.strikes = self.strikes + 1
     sound('lp_bend')
     ShakeCam(self.scene.cam, 'SMALL_EXPLOSION_SHAKE', 0.035)
@@ -341,7 +302,6 @@ function Game:bend()
     end)
 end
 
----The pick's tip snaps off and stays in the lock.
 function Game:snap(lost)
     sound('lp_snap')
     ShakeCam(self.scene.cam, 'SMALL_EXPLOSION_SHAKE', 0.07)
@@ -353,15 +313,12 @@ function Game:snap(lost)
     self:leave('failed', lost)
 end
 
----Every wafer is set: the plug turns and the door unlocks.
 function Game:open(armed)
     self.phase, self.phaseAt = 'turn', self.now
     self.armed = armed
     self.tension, self.finger, self.rate, self.pressure = false, 0.0, 0.0, 0.0
     self:flash(t('turning'), 'success', 2500)
 end
-
--- Picking -------------------------------------------------------------------------------------
 
 function Game:controls()
     DisableAllControlActions(0)
@@ -404,15 +361,13 @@ function Game:controls()
     end
 end
 
--- Dev mode: fit the lock to this car while picking (keys in Lockpick.nudged). Each press goes
--- through /lockpick_rig, which moves the lock and prints the vehicleFits line.
+-- Each press goes through /lockpick_rig, which moves the lock and prints the vehicleFits line.
 function Game:nudgeFit()
     local model = Lockpick.modelName(self.vehicle)
     local moved = Lockpick.nudged(model, self.vehicle)
     if not moved then return end
 
     if moved.x then
-        -- A measured fit: move it in place (save it with /lockpick_fitall <model>).
         Lockpick.liveFits[model] = moved
         self.scene:setPlacement(Lockpick.placement(self.vehicle, self.door))
         return
@@ -420,7 +375,6 @@ function Game:nudgeFit()
     ExecuteCommand(('lockpick_rig %.3f %.3f %.3f'):format(moved.back, moved.up, moved.out))
 end
 
----Moves the hook toward the finger the way the wafer under it allows, and works out the pressure.
 function Game:pickStep(dt)
     local pos = self.pos
     local finger, lift = self.finger, self.lift
@@ -428,7 +382,7 @@ function Game:pickStep(dt)
     local pressure, top, rate = 0.0, MAX_LIFT, 0.0
 
     if not self.holding then
-        lift = math.max(0.0, lift - dt * 0.03) -- the springs push the hook back down
+        lift = math.max(0.0, lift - dt * 0.03)
         self.lift, self.pressure, self.rate = lift, 0.0, 0.0
         self.touching = lift > 0.0003
         self.strain = math.max(0.0, self.strain - dt)
@@ -453,12 +407,10 @@ function Game:pickStep(dt)
             self:setWafer(pos)
         end
     elseif kind == 'set' and depth then
-        -- Set wafers float loose; push one past the line and it oversets.
         lift = lift + (finger - lift) * follow
         pressure = 0.05
         if lift > shearLine(depth) + self.session.overset then self:overset(pos) end
     elseif kind == 'stuck' then
-        -- An overset wafer won't move at all.
         top = shearLine(depth or Rig.depths) + self.session.overset
         lift = lift + (math.min(finger, top) - lift) * follow
     elseif kind == 'empty' then
@@ -469,14 +421,12 @@ function Game:pickStep(dt)
             self:flash(t('empty'), 'muted')
         end
     else
-        -- A free wafer (or one the server hasn't described yet): springy, light.
         if kind == 'pending' then top = PENDING_LIFT end
         lift = lift + (math.min(finger, top) - lift) * follow
         if kind == 'spring' and lift > 0.0003 and not self.touching then sound('lp_spring') end
         pressure = 0.12 + 0.3 * lift / MAX_LIFT
     end
 
-    -- Pushing on after the hook can't go higher is pushing against metal.
     if finger > top then pressure = math.max(pressure, (finger - top) / SPAN) end
 
     if pressure > STRAIN_FROM then
@@ -490,9 +440,6 @@ function Game:pickStep(dt)
     if self.strain >= 1.0 then self:bend() end
 end
 
--- Animation -----------------------------------------------------------------------------------
-
----Places a part that sits in the tool (tool space) where the tool is now.
 function Game:toolPart(id, pos, rot)
     local part = self.scene:get(id)
     if not part then return end
@@ -507,7 +454,6 @@ function Game:animate(dt)
     local roll = 0.0
 
     if self.phase == 'insert' then
-        -- The blade slides in, then the lever swings out to uncover the plate.
         self.insert = Lerp(INSERT_FROM, 0.0, ease(age / 900))
         self.swing = LEVER_OPEN * ease((age - 950) / 350)
         if age >= 950 and not self.leverOut then
@@ -518,7 +464,6 @@ function Game:animate(dt)
     elseif self.phase == 'pick' then
         if self.tension then roll = TENSION_ROLL + GIVE_ROLL * self.setCount end
     elseif self.phase == 'turn' then
-        -- A quarter turn throws the lock; back again so the tool can come out.
         if age < 650 then
             roll = Lerp(TENSION_ROLL, 90.0, ease(age / 600))
         elseif age < 950 then
@@ -528,7 +473,7 @@ function Game:animate(dt)
         end
         if age >= 600 and not self.unlocked then
             self.unlocked = true
-            sound('lp_unlock')
+            sound(self.door == 'bike' and 'lp_bike_unlock' or 'lp_unlock')
         end
         if age >= 1450 then self:leave('opened', self.armed) end
     elseif self.phase == 'withdraw' then
@@ -537,15 +482,12 @@ function Game:animate(dt)
         if age >= 900 then self:finish(self.leaving[1], self.leaving[2]) end
     end
 
-    -- A stiff wafer giving makes the whole tool shiver a little.
     local shiver = self.rate > 0.0 and (math.random() - 0.5) * 0.3 or 0.0
     self.roll = self.phase == 'turn' and roll or Lerp(self.roll, roll, k) + shiver
-    if math.abs(self.roll - roll) < 0.001 then self.roll = roll end -- there: the plug stops being moved
+    if math.abs(self.roll - roll) < 0.001 then self.roll = roll end
     local slide = Rig.wafers[self.pos] - Rig.tip.y
     self.slide = math.abs(self.slide - slide) < 1e-6 and slide or Lerp(self.slide, slide, Clamp(dt * 18.0, 0.0, 1.0))
 
-    -- The blade pushes the dust shutter in once its tip reaches the plug's face; it springs back
-    -- shut when the blade is out.
     local tip = self.insert + Rig.bladeLength
     local shutter = SHUTTER_OPEN * Clamp(tip / 0.004, 0.0, 1.0)
     if self.shutter > 1.0 and shutter <= 1.0 then sound('lp_shutter') end
@@ -568,20 +510,16 @@ function Game:animate(dt)
     local swing = Mat.axis('z', -self.swing)
     self:toolPart('lever', pivot - Mat.apply(swing, pivot), swing)
 
-    -- The camera breathes a little, like a held head.
-    local cam = cfg.camera
+    local cam = self.cam
     if scene.cam then
         local s = self.now / 1000.0
         scene.camGoalPos = cam.pos + vec3(math.sin(s * 0.8) * 0.0012, math.sin(s * 0.6) * 0.0008, math.sin(s * 1.1) * 0.0009)
     end
 end
 
--- Sound loops ---------------------------------------------------------------------------------
-
 function Game:soundLoops()
     local active = {}
 
-    -- The hook dragging a stiff wafer up.
     if not self.ending and self.phase == 'pick' and self.rate > 0.0 then
         local level = math.floor(Clamp(self.rate / self.session.speed, 0.0, 1.0) * 10 + 0.5) / 10
         active.scrape = { 'lp_scrape', { level = math.max(level, 0.2) } }
@@ -598,9 +536,6 @@ function Game:soundLoops()
 
     if self.mirror then self.mirror:setLoops(active) end
 end
-
--- HUD -----------------------------------------------------------------------------------------
--- Drawn by the page (TR.ui.hud). The state is rebuilt every frame; only changes are sent.
 
 function Game:hint()
     local keys = {
@@ -627,8 +562,6 @@ end
 function Game:draw()
     if self.ending or self.phase ~= 'pick' then return TR.ui.hud.hide() end
 
-    -- One slot per wafer position, like a locksmith's notes: set ones are checked, decoded ones
-    -- show their depth, empty ones a dash.
     local slots = {}
     for i = 1, POSITIONS do
         local depth = self.depths[i]
@@ -653,8 +586,6 @@ function Game:draw()
         meter = meter,
     })
 end
-
--- Loop ----------------------------------------------------------------------------------------
 
 function Game:stillThere()
     local ped = PlayerPedId()
@@ -689,7 +620,7 @@ end
 
 Lockpick.Game = Game -- for tests
 
----Runs the minigame to the end. Blocks the calling thread.
+-- result: 'opened' (extra: alarm armed), 'failed' (extra: item lost), 'cancelled' or why the attempt ended
 ---@return string result, any extra
 function Lockpick.run(vehicle, door, session)
     local offset, pitch, yaw = Lockpick.placement(vehicle, door)

@@ -1,18 +1,5 @@
---[[
-    The siphon's props.
-
-        local props = SiphonProps.new(vehicle, place)
-        props:setCan(pos, heading)     -- the can is down: its body, cap and strap; the hoses and funnel beside it
-        props:update(dt)               -- every frame: steps the hoses, moves and draws everything
-        props:mirrorState(set)         -- what players nearby need to draw it (SiphonProps.view)
-        props:destroy()
-
-    Filler space (rig.lua) is fixed to the car at the filler (props.scene): the bezel, flap, fuel cap
-    and its strap. The can stands where the player put it; can space is its bottom middle, +X along
-    the handle to the neck. The siphon and blow hoses are ropes (TR.rope) in world
-    space, drawn as clear pieces stretched between their nodes, with the fuel inside the siphon hose.
-    The game sets plain state on the props (caps, funnel, fuel, streams); update() draws it.
-]]
+-- Filler space (rig.lua) is fixed to the car at the filler. Can space is the can's bottom middle, +X along the handle to the neck.
+-- The hoses are ropes (TR.rope) in world space. The game sets plain state on the props; update() draws it.
 
 SiphonProps = {}
 SiphonProps.__index = SiphonProps
@@ -25,23 +12,21 @@ local IDENTITY = Mat.identity()
 local SIPHON_NODE, BLOW_NODE = 0.05, 0.04  -- metres between the hoses' simulated nodes
 local NECK_LIP = 0.035                     -- metres the siphon hose stands straight up out of the can's neck
 local STRAP_PIECES = 6
-local STREAM_PIECES = 8                    -- per stream of spilling fuel
+local STREAM_PIECES = 8
 local DROPS = 4
-local CAP_SWING_DAMPING = 3.0              -- the fuel cap swinging on its strap settles in a second or so
--- The funnel in the can is turned so its wire hanger (funnel space -X) points off the can's side, not
--- over the handle.
+local CAP_SWING_DAMPING = 3.0              -- settles in a second or so
+-- Turned so its wire hanger (funnel space -X) points off the can's side, not over the handle.
 local FUNNEL_TURN = Mat.axis('z', 90.0)
-local FUNNEL_WALL = 0.003                  -- metres from its inside to its outside (the wall, and some room)
-local BEND_SPEED = 300.0                   -- degrees a second the spout bends straight (or back)
-local LAY_OUT = { 0.1, 0.45 }              -- metres out from the can the siphon hose's end is laid (by its slack)
+local FUNNEL_WALL = 0.003                  -- metres: the wall, and some room
+local BEND_SPEED = 300.0                   -- degrees a second
+local LAY_OUT = { 0.1, 0.45 }              -- metres out from the can
 local LAY_TURNS = { 0.0, 35.0, -35.0, 70.0, -70.0 } -- degrees off straight out tried when that spot is taken
-local LAY_CLEAR = 0.1                      -- metres over the can (and the funnel in it) the end is carried
+local LAY_CLEAR = 0.1                      -- metres over the can and the funnel in it
 local SLIDE_STEP = 0.0008                  -- metres a collider pass moves hose resting on the can towards slideOff
-SiphonProps.SPOUT = FUNNEL.spout.piece * FUNNEL.spout.pieces + FUNNEL.nozzle -- metres the spout reaches below its seat
-SiphonProps.FUNNEL_HOLDS = FUNNEL.levels[#FUNNEL.levels][1]                  -- litres up to its rim
-local RIM_ABOVE_NECK = FUNNEL.seat.z + FUNNEL.rim.top - CAN.neckPath[1].z     -- metres from its rim down to the neck's top
--- The siphon hose in the funnel is held from outside its rim, over it and down (else the free hose next
--- to the rim sags back into the bowl and its links cut through the rim): out from the rim's middle, up.
+SiphonProps.SPOUT = FUNNEL.spout.piece * FUNNEL.spout.pieces + FUNNEL.nozzle -- metres
+SiphonProps.FUNNEL_HOLDS = FUNNEL.levels[#FUNNEL.levels][1]                  -- litres
+local RIM_ABOVE_NECK = FUNNEL.seat.z + FUNNEL.rim.top - CAN.neckPath[1].z     -- metres
+-- Held from outside the rim, else the free hose sags back into the bowl and its links cut through the rim.
 local OVER_RIM = { { FUNNEL.rim.radius + 0.06, 0.005 }, { FUNNEL.rim.radius + 0.015, 0.03 } }
 
 local MODELS = {
@@ -50,7 +35,6 @@ local MODELS = {
     'tr_sf_funnel', 'tr_sf_bellows', 'tr_sf_nozzle', 'tr_sf_funnelpool',
 }
 
----The funnel's bowl: its inside radius at height z (funnel space), from rig.lua's fill levels.
 local function bowlRadius(z)
     local levels = FUNNEL.levels
     if z <= levels[1][2] then return levels[1][3] end
@@ -61,10 +45,8 @@ local function bowlRadius(z)
     return levels[#levels][3]
 end
 
--- Local objects ------------------------------------------------------------------------------
-
-local shown = {} -- entity -> visible, so nothing is set twice
-local placed = {} -- entity -> the matrix it was last given, so a still object costs no native
+local shown = {} -- so nothing is set twice
+local placed = {} -- so a still object costs no native
 
 local function show(entity, visible)
     if shown[entity] == visible then return end
@@ -102,14 +84,12 @@ local function delete(entity)
     if DoesEntityExist(entity) then DeleteEntity(entity) end
 end
 
----Puts an object at pos, turned by rot (a Mat), and shows it.
 local function put(entity, pos, rot)
     setMatrix(entity, rot.y.x, rot.y.y, rot.y.z, rot.x.x, rot.x.y, rot.x.z, rot.z.x, rot.z.y, rot.z.z, pos.x, pos.y, pos.z)
     show(entity, true)
 end
 
----Stretches a 1 m piece (modelled along +Y from its origin) from a to b. `face`: the way its flat
----side faces (straps), else it keeps its X level.
+-- Modelled along +Y from its origin. face: the way its flat side faces (straps), else it keeps its X level.
 local function stretch(entity, a, b, face)
     local d = b - a
     local len = #d
@@ -123,7 +103,6 @@ local function stretch(entity, a, b, face)
     show(entity, true)
 end
 
----Puts a piece `unit` metres long (modelled along +Y from its origin) from a to b, stretched to fit.
 local function span(entity, a, b, unit)
     local d = b - a
     local len = #d
@@ -137,16 +116,16 @@ local function span(entity, a, b, unit)
     show(entity, true)
 end
 
----stretch() without a face, in numbers (no vectors made): the hoses' pieces, many a frame.
+-- In numbers, no vectors made: the hoses' pieces, many a frame.
 local function stretchXYZ(entity, ax, ay, az, bx, by, bz)
     local dx, dy, dz = bx - ax, by - ay, bz - az
     local len = math.sqrt(dx * dx + dy * dy + dz * dz)
     if len < 0.0005 then return show(entity, false) end
     local yx, yy, yz = dx / len, dy / len, dz / len
-    local xx, xy, xz = yy, -yx, 0.0 -- y x up
+    local xx, xy, xz = yy, -yx, 0.0
     local xl = math.sqrt(xx * xx + xy * xy)
     if xl < 0.001 then
-        xx, xy, xz = 0.0, yz, -yy -- y x (1, 0, 0)
+        xx, xy, xz = 0.0, yz, -yy
         xl = math.sqrt(xy * xy + xz * xz)
     end
     xx, xy, xz = xx / xl, xy / xl, xz / xl
@@ -154,15 +133,13 @@ local function stretchXYZ(entity, ax, ay, az, bx, by, bz)
     show(entity, true)
 end
 
----A polyline drawn with pieces (hidden past its end).
 local function drawLine(pieces, points, face)
     for i, piece in ipairs(pieces) do
         if points and points[i + 1] then stretch(piece, points[i], points[i + 1], face) else show(piece, false) end
     end
 end
 
----A strap `length` long from a to b: a curve whose middle is pushed along `sag` until it is as long
----as the strap (straight when pulled taut).
+-- Straight when pulled taut.
 local function strapPoints(a, b, length, sag, n)
     local function curve(h)
         local c = (a + b) * 0.5 + sag * h
@@ -190,19 +167,15 @@ local function strapPoints(a, b, length, sag, n)
     return points
 end
 
--- A hose ---------------------------------------------------------------------------------------
-
 local HoseView = {}
 HoseView.__index = HoseView
 
--- The hose is drawn along a smooth curve through its simulated nodes, in pieces this many times
--- shorter than the nodes are apart: a bend reads as a curve, not as a few straight sticks.
+-- Pieces this many times shorter than the nodes are apart, so a bend reads as a curve, not a few sticks.
 HoseView.SUB = 3
-local REDRAW = 0.0003 -- metres a node moves before the pieces round it are drawn again
+local REDRAW = 0.0003 -- metres
 
--- When this resource stops, the game drops its models straight after this event, before its scripts end:
--- a prop left standing on a dropped model can't be deleted any more, and the game can crash over it. So
--- every prop still out goes now, inside the event (the filler's go with their TR.scene).
+-- The game drops this resource's models straight after this event, before its scripts end: a prop left
+-- on a dropped model can't be deleted and the game can crash over it, so every prop goes now.
 AddEventHandler('onResourceStop', function(name)
     if name ~= GetCurrentResourceName() then return end
     for entity in pairs(shown) do delete(entity) end
@@ -215,8 +188,7 @@ function HoseView.new(rope, segment, ring, at)
     return self
 end
 
----The point `s` metres along the hose from end 1, on a smooth curve (Catmull-Rom) through its nodes,
----as x, y, z (no vectors made: the pieces are drawn with these, many a frame).
+-- Catmull-Rom, as x, y, z: no vectors made, the pieces are drawn with these many a frame.
 function HoseView:xyz(s)
     local p, n = self.rope.p, self.rope.count
     local f = math.max(0.0, math.min(s / self.rope.seg, n - 1))
@@ -232,11 +204,9 @@ function HoseView:xyz(s)
         p0.z * w0 + p1.z * w1 + p2.z * w2 + p3.z * w3
 end
 
----The same point as a vector.
 function HoseView:at(s) return vec3(self:xyz(s)) end
 
----Stretches `piece` along the curve from s0 to s1 metres. Where the piece before ended at s0, its end
----point is used again, not worked out twice.
+-- Where the piece before ended at s0, its end point is used again, not worked out twice.
 function HoseView:piece(piece, s0, s1)
     local ax, ay, az
     if self.lastS == s0 then ax, ay, az = self.lastX, self.lastY, self.lastZ else ax, ay, az = self:xyz(s0) end
@@ -245,28 +215,23 @@ function HoseView:piece(piece, s0, s1)
     stretchXYZ(piece, ax, ay, az, bx, by, bz)
 end
 
----Does piece k (of the hose or the fuel in it) need drawing again: did a node its curve runs through move?
 function HoseView:stale(k)
     local dirty, n = self.dirty, self.rope.count
     local j = (k - 1) // HoseView.SUB -- the curve through nodes j .. j + 3
     return dirty[math.max(1, j)] or dirty[j + 1] or dirty[j + 2] or dirty[math.min(n, j + 3)]
 end
 
----Does piece k (from s0 to s1 metres along) reach into the span between metres a and b (either way round)?
 local function across(k, per, a, b)
     return a ~= b and k * per >= math.min(a, b) and (k - 1) * per <= math.max(a, b)
 end
 
----hidden: metres from end 1 not drawn (down inside the car, where the body may not hide it).
----Only what changed is drawn again: the pieces round nodes that moved more than REDRAW since they were
----drawn, and those the hidden length moved across.
+-- hidden: metres from end 1 not drawn (down inside the car, where the body may not hide it).
 function HoseView:draw(visible, hidden)
     local rope = self.rope
     hidden = hidden or 0.0
     local all = self.drawnVisible ~= visible
     local was = self.drawnHidden or hidden
     self.drawnVisible, self.drawnHidden, self.moved, self.all = visible, hidden, false, false
-    -- Asleep, the hose doesn't move: drawn once, it stays as it is.
     if rope.asleep and self.drawnAsleep and not all and was == hidden then return end
     self.drawnAsleep = rope.asleep == true
 
@@ -302,8 +267,7 @@ function HoseView:draw(visible, hidden)
     end
 end
 
----Fuel inside the hose from `from` to `to` metres along it (from end 1), with a rounded front. Call it
----after draw() the same frame: only what changed (the hose round it, or its ends) is drawn again.
+-- Call after draw() the same frame.
 function HoseView:fuel(pieces, front, from, to, hidden)
     local rope = self.rope
     from = math.max(from, hidden or 0.0)
@@ -329,8 +293,6 @@ function HoseView:destroy()
 end
 SiphonProps.HoseView = HoseView
 
--- Setup -----------------------------------------------------------------------------------------
-
 ---@param vehicle integer
 ---@param place table Siphon.placement
 function SiphonProps.new(vehicle, place)
@@ -338,13 +300,12 @@ function SiphonProps.new(vehicle, place)
         vehicle = vehicle,
         place = place,
         kitShown = false,
-        flap = 0.0,                                                    -- degrees the flap is pushed in
+        flap = 0.0,
         fuelCap = { turn = 0.0, out = 0.0 },                           -- see fuelCapPose
         canCap = { turn = 0.0, out = 0.0 },                            -- see canCapPose
-        -- where: 'ground' / 'held' (at pos, turned rot) or 'can' (lift: metres up out of its seat).
-        -- bend: degrees its spout is bent; level: litres of fuel standing in it.
+        -- where: 'ground', 'held' or 'can' (lift: metres up out of its seat). bend: degrees. level: litres.
         funnel = { where = 'ground', bend = FUNNEL.spout.rest, shownBend = FUNNEL.spout.rest, level = 0.0, lift = 0.0 },
-        fuel = { from = 0.0, to = 0.0 },                               -- along the siphon hose from its tip
+        fuel = { from = 0.0, to = 0.0 },
         streams = {},
         drops = {},
     }, SiphonProps)
@@ -377,7 +338,6 @@ function SiphonProps.new(vehicle, place)
     for i = 1, FUNNEL.spout.pieces do self.spoutEntities[i] = spawn('tr_sf_bellows', at) end
     self.carried = spawn('tr_sf_can', at)
 
-    -- The hoses' ends go down channels: the filler neck (filler space, moves with the car) and the can's neck.
     self.siphonIn = function(s) return self.siphonPath(s) end
     self.siphonGuide = function(s) return self.guidePath(s) end
     self.blowIn = function(s) return self.blowPath(s) end
@@ -396,16 +356,14 @@ function SiphonProps:updateChannels()
     for i, p in ipairs(FILLER.blowPath) do b[i] = scene:toWorld(p) end
     self.siphonPath, self.siphonDepth = Rope.path(s)
     self.blowPath, self.blowDepth = Rope.path(b)
-    -- While it is fed the hand holds the hose straight out of the mouth along the neck, so it goes in
-    -- the way the neck runs instead of hanging down from the mouth.
+    -- Held straight out of the mouth along the neck, so it goes in the way the neck runs.
     local out = Vec.normalize(s[1] - s[2])
     table.insert(s, 1, s[1] + out * SiphonProps.GUIDE)
     self.guidePath = Rope.path(s)
 end
 
----How much of a hose (metres from end 1) is down inside the filler past its mouth: not drawn, since the
----neck runs inside the car and the body doesn't hide it everywhere (by the wheel arch).
-local INSIDE_SHOWN = 0.02 -- metres just past the mouth that still show (the paint covers the rest)
+-- The neck runs inside the car and the body doesn't hide it everywhere (by the wheel arch).
+local INSIDE_SHOWN = 0.02 -- metres; the paint covers the rest
 function SiphonProps:inside(rope)
     local e = rope.ends[1]
     if not e then return 0.0 end
@@ -413,9 +371,7 @@ function SiphonProps:inside(rope)
     return math.max(0.0, e.fed - outside - INSIDE_SHOWN)
 end
 
-SiphonProps.GUIDE = 0.16 -- metres of hose the hand holds straight outside the filler while feeding
-
--- Spaces ----------------------------------------------------------------------------------------
+SiphonProps.GUIDE = 0.16 -- metres
 
 function SiphonProps:filler(p) return self.scene:toWorld(p) end
 function SiphonProps:toFiller(w) return Vec.unrotate(self.scene.rot, w - self.scene.pos) end
@@ -423,25 +379,19 @@ function SiphonProps:fillerDir(d) return Mat.apply(self.scene.rot, d) end
 function SiphonProps:can(p) return self.canPos + Mat.apply(self.canRot, p) end
 function SiphonProps:canDir(d) return Mat.apply(self.canRot, d) end
 
----The filler's mouth, where the hoses go in (world).
 function SiphonProps:mouth() return self:filler(FILLER.siphonPath[1]) end
----The top of the can's open neck (world).
 function SiphonProps:neckTop() return self:can(CAN.neckPath[1]) end
 
----Where the siphon hose goes into the can (world): the middle of the funnel's rim when the funnel is
----in, else the top of the neck.
 function SiphonProps:canTarget()
     if self.funnel.where == 'can' then return self:can(FUNNEL.seat + vec3(0.0, 0.0, FUNNEL.rim.top)) end
     return self:neckTop()
 end
 
----How far the hose goes down from canTarget() to the top of the neck (through the funnel).
 function SiphonProps:aboveNeck()
     return self.funnel.where == 'can' and RIM_ABOVE_NECK or 0.0
 end
 
----Where the hose is held over the funnel's rim before it goes down (world; none without the funnel), on
----the side the hose comes from: worked out when it goes in and kept till it is out.
+-- Kept from when it goes in until it's out.
 function SiphonProps:overRim(top)
     if self.funnel.where ~= 'can' then return {} end
     local rope = self.siphon
@@ -456,8 +406,7 @@ function SiphonProps:overRim(top)
     return points
 end
 
----The siphon hose's end `depth` metres down the can's neck (through the funnel when it is in). It comes
----up out of it a little before it bends over the rim (not through the side).
+-- It comes up out of the neck a little before it bends over the rim, not through the side.
 function SiphonProps:intoCan(depth)
     local top = self:canTarget()
     local guide = self:overRim(top)
@@ -467,27 +416,23 @@ function SiphonProps:intoCan(depth)
     self.siphon:feed(2, Rope.path(guide), depth + self:overRimLength() + NECK_LIP + self:aboveNeck())
 end
 
----How far the siphon hose's end is down the can's neck (0 when it isn't in).
 function SiphonProps:canDepth()
     local e = self.siphon.ends[2]
     return e and math.max(0.0, e.fed - self:overRimLength() - NECK_LIP - self:aboveNeck()) or 0.0
 end
 
----Metres of hose held over the funnel's rim before it goes down (as intoCan holds it).
 function SiphonProps:overRimLength()
     if self.funnel.where ~= 'can' then return 0.0 end
     local a, b = OVER_RIM[1], OVER_RIM[2]
     return math.sqrt((a[1] - b[1]) ^ 2 + (a[2] - b[2]) ^ 2) + math.sqrt(b[1] ^ 2 + (NECK_LIP - b[2]) ^ 2)
 end
 
----Is a world point inside the car's box (grown by margin)?
 function SiphonProps:insideCar(p, margin)
     local o = GetOffsetFromEntityGivenWorldCoords(self.vehicle, p.x, p.y, p.z)
     local min, max = self.carMin, self.carMax
     return o.x > min.x - margin and o.x < max.x + margin and o.y > min.y - margin and o.y < max.y + margin
 end
 
--- The car's side, felt by the hoses ---------------------------------------------------------------
 -- Rays at the car from outside on a grid in filler space record where its body is, a few a frame.
 
 local PROFILE = { x0 = -0.75, dx = 0.15, nx = 11, z0 = 0.15, dz = 0.1 }
@@ -512,7 +457,7 @@ function SiphonProps:sampleProfile(budget)
     end
 end
 
----How far in (filler space y) the car's body is at x, z, or nil where there is none.
+-- nil where there's none
 function SiphonProps:wallAt(x, z)
     local pf = self.profile
     local fx, fz = (x - pf.x0) / pf.dx, (pf.z0 - z) / pf.dz
@@ -522,18 +467,14 @@ function SiphonProps:wallAt(x, z)
     local function at(i, j) return pf.y[(iz + j) * pf.nx + ix + i] end
     local a, b, c, d = at(0, 0), at(1, 0), at(0, 1), at(1, 1)
     if a and b and c and d then return Lerp(Lerp(a, b, u), Lerp(c, d, u), v) end
-    -- At an edge of the body: the nearest ray that hit it.
     if u < 0.5 then return v < 0.5 and a or c end
     return v < 0.5 and b or d
 end
 
--- The ground ------------------------------------------------------------------------------------
-
 local GROUND_STEP = 0.2
 local GROUND_ROOM = 0.25 -- metres the ground not looked at yet may be higher than any that has been (a kerb)
 
----The ground round `centre`: props.ground(x, y) is its height there. Each 0.2 m cell is looked up the
----first time it is needed (a few at a time as the hoses move), not the whole area at once.
+-- Each 0.2 m cell is looked up the first time it's needed, not the whole area at once.
 function SiphonProps:sampleGround(centre, half)
     local n = math.ceil(half * 2 / GROUND_STEP) + 1
     local x0, y0 = centre.x - half, centre.y - half
@@ -563,12 +504,9 @@ function SiphonProps:sampleGround(centre, half)
     end
 end
 
--- Colliders for the hoses -----------------------------------------------------------------------
-
 local WHEELS = { wheel_lf = 0, wheel_rf = 1, wheel_lr = 2, wheel_rr = 3 } -- bone and wheel index
 
----The car's tyres near the filler, as cylinders across the car (the body profile's rays don't stop the
----hose on them: it would hang down through the tyre).
+-- The body profile's rays don't stop the hose on the tyres: it would hang down through them.
 function SiphonProps:tyres()
     local vehicle, list = self.vehicle, {}
     local right = GetOffsetFromEntityInWorldCoords(vehicle, 1.0, 0.0, 0.0) - GetEntityCoords(vehicle)
@@ -582,7 +520,6 @@ function SiphonProps:tyres()
                 local width = GetVehicleWheelTireColliderWidth(vehicle, index)
                 radius = (radius and radius > 0.15) and radius or 0.33
                 width = (width and width > 0.05) and width or 0.2
-                -- Its outer face is the side the filler is on.
                 local out = Vec.dot(paint - c, right) >= 0 and right or -right
                 local half = math.max(0.08, width / 2) + 0.01
                 list[#list + 1] = { c = c, out = out, radius = radius + 0.01, half = half,
@@ -593,16 +530,14 @@ function SiphonProps:tyres()
     return list
 end
 
--- The player's legs, felt by the hoses: capsules between live bones (so any pose, any ped) from the
--- hip to the knee, the knee to the ankle and the ankle to the toes, clothes allowed for.
+-- Capsules between live bones, so any pose and any ped; clothes allowed for.
 local LEGS = {
     { 58271, 63931, 0.085 }, { 63931, 14201, 0.065 }, { 14201, 2108, 0.055 }, -- SKEL_L_Thigh, Calf, Foot, Toe0
     { 51826, 36864, 0.085 }, { 36864, 52301, 0.065 }, { 52301, 20781, 0.055 }, -- SKEL_R_*
 }
-local LEG_WAKE = 0.01 -- metres a leg moves before the sleeping hoses are checked against it
-local LEG_NEAR = 0.02 -- metres from a leg a sleeping hose's node has to be for it to wake
+local LEG_WAKE = 0.01 -- metres
+local LEG_NEAR = 0.02 -- metres
 
----Is any node of the rope within LEG_NEAR of one of the legs?
 local function nearLegs(rope, legs)
     local p, n = rope.p, rope.count
     local x0, y0, z0, x1, y1, z1 = math.huge, math.huge, math.huge, -math.huge, -math.huge, -math.huge
@@ -630,8 +565,7 @@ local function nearLegs(rope, legs)
 end
 SiphonProps.nearLegs = nearLegs
 
----Where the legs are this frame. A sleeping hose wakes when a leg that moved touches it, or was
----touching it (it may have to fall now).
+-- A sleeping hose wakes when a leg that moved touches it, or was touching it (it may have to fall now).
 function SiphonProps:updateLegs()
     local ped = PlayerPedId()
     local legs = {}
@@ -670,7 +604,6 @@ function SiphonProps:colliders()
         if wall and q.y > wall - r and q.y < wall + 0.15 then return self:filler(vec3(q.x, wall - r, q.z)), true end
     end
 
-    -- Resting on top of something, once the hose has been put down it slides off towards slideOff.
     local function slid(x, y)
         local s = self.slideOff
         if not s then return x, y end
@@ -679,14 +612,13 @@ function SiphonProps:colliders()
 
     local hx, hy, top = CAN.size.x / 2, CAN.size.y / 2, CAN.top
     local neck, rim = CAN.neckPath[1], CAN.neckPath[1].z
-    local neckR = CAN.cap.radius + 0.004 -- the threads (and the collar below them) are about the cap's size
-    local canBall = math.sqrt(hx * hx + hy * hy) + 0.01 -- round the can, seen from above
+    local neckR = CAN.cap.radius + 0.004 -- the threads and the collar are about the cap's size
+    local canBall = math.sqrt(hx * hx + hy * hy) + 0.01
     local function can(p, r)
         local c = self.canPos
         local dx, dy, reach = p.x - c.x, p.y - c.y, canBall + r
         if dx * dx + dy * dy > reach * reach then return end
         local q = Vec.unrotate(self.canRot, p - c)
-        -- The neck stands up from the shoulder: out over the rim or off its side, whichever is nearer.
         local nx, ny = q.x - neck.x, q.y - neck.y
         local d = math.sqrt(nx * nx + ny * ny)
         if q.z < rim + r and q.z > top - 0.02 and d < neckR + r then
@@ -700,7 +632,6 @@ function SiphonProps:colliders()
         end
         local dx, dy, dz = hx + r - math.abs(q.x), hy + r - math.abs(q.y), top + r - q.z
         if dx <= 0 or dy <= 0 or dz <= 0 or q.z < -0.05 then return end
-        -- Out the shortest way: on top of it, or off a side.
         if dz <= dx and dz <= dy then
             local x, y = slid(q.x, q.y)
             return self:can(vec3(x, y, top + r)), true
@@ -719,7 +650,7 @@ function SiphonProps:colliders()
             local radial = far and q or q - w.out * along
             local d = far and math.huge or #radial
             if along < w.half + r and along > -w.half - r and d < w.radius + r then
-                -- Out onto the outer sidewall or the tread, whichever is nearer (never inside the car).
+                -- Never inside the car.
                 local side, tread = w.half + r - along, w.radius + r - d
                 if side <= tread or d < 1e-6 then return p + w.out * side, true end
                 return w.c + w.out * along + radial * ((w.radius + r) / d), true
@@ -727,7 +658,6 @@ function SiphonProps:colliders()
         end
     end
 
-    -- Round the legs: out from the nearest point of the bone, away from the car if it is right on it.
     local function leg(p, r)
         local box = self.legBox
         if not box or p.x < box.x0 - r or p.x > box.x1 + r or p.y < box.y0 - r or p.y > box.y1 + r
@@ -749,8 +679,7 @@ function SiphonProps:colliders()
         if touched then return p, true end
     end
 
-    -- The funnel in the can: its wall, from outside (over the rim or off the side) and from inside (in
-    -- off it), and its inside's floor. The nodes down through it are in the guide, not collided.
+    -- The nodes down through it are in the guide, not collided.
     local rimTop, rimR = FUNNEL.rim.top, FUNNEL.rim.radius
     local funnelBall = math.max(rimR, FUNNEL.flange) + 0.01
     local function funnel(p, r)
@@ -772,7 +701,6 @@ function SiphonProps:colliders()
         end
         local up = rimTop + r - q.z
         if d < (inner + outer) / 2 then
-            -- Inside the bowl: in off its wall, or up over the rim when that is nearer.
             local into = d - (inner - r)
             if into <= 0.0 then return end
             if up < into then return onRim() end
@@ -785,7 +713,6 @@ function SiphonProps:colliders()
         return back(q.x * k, q.y * k, q.z)
     end
 
-    -- Which of them a hose within box (Rope: colliders.select) can reach this step.
     local tyreBox
     for _, w in ipairs(tyres) do
         local b = w.ball
@@ -822,9 +749,6 @@ function SiphonProps:colliders()
     return { ground, car, can, tyre, leg, funnel, select = select }
 end
 
--- The can and the kit ------------------------------------------------------------------------------
-
----The ghost of the can where it would go (alpha), or hidden.
 function SiphonProps:ghost(pos, heading)
     if not pos and not self.ghostEntity then return end
     if not self.ghostEntity then
@@ -835,15 +759,12 @@ function SiphonProps:ghost(pos, heading)
     put(self.ghostEntity, pos, Mat.axis('z', heading))
 end
 
----The closed can in the player's hand, or hidden.
 function SiphonProps:carry(pos, rot)
     self.carriedAt = pos and { pos = pos, rot = rot } or nil
     if not pos then return show(self.carried, false) end
     put(self.carried, pos, rot)
 end
 
----The can is down at pos (its bottom middle), turned to heading: it opens up (body, cap, strap) and the
----hoses and the funnel are laid out beside it.
 function SiphonProps:setCan(pos, heading)
     self.canPos, self.canRot = pos, Mat.axis('z', heading)
     if self.ghostEntity then delete(self.ghostEntity) end
@@ -863,7 +784,6 @@ function SiphonProps:setCan(pos, heading)
     self:layKit()
 end
 
----The can is picked up again: its body, cap and strap go (the closed can is in the hand).
 function SiphonProps:liftCan()
     delete(self.canBody)
     delete(self.canCapEntity)
@@ -871,8 +791,6 @@ function SiphonProps:liftCan()
     drawLine(self.canStrap, nil)
 end
 
----Puts the siphon hose (coiled), the blow hose and the funnel on the ground beside the can, on the side
----away from the player and clear of the car.
 function SiphonProps:layKit()
     local can, filler = self.canPos, self.place.paint
     local f = vec3(filler.x - can.x, filler.y - can.y, 0.0)
@@ -891,7 +809,6 @@ function SiphonProps:layKit()
 
     local function onGround(p, lift) return vec3(p.x, p.y, self.ground(p.x, p.y) + lift) end
 
-    -- The siphon hose in a loose flat coil, its filler end on the outside.
     local points, r, angle = {}, 0.21, math.atan(f.y, f.x)
     local length, step = 0.0, 0.03
     points[1] = onGround(coil + vec3(math.cos(angle), math.sin(angle), 0.0) * r, HOSE.siphonRadius)
@@ -906,26 +823,20 @@ function SiphonProps:layKit()
     local bow = (blowA + blowB) * 0.5 + s * 0.06
     self.blow:lay({ onGround(blowA, HOSE.blowRadius), onGround(bow, HOSE.blowRadius), onGround(blowB, HOSE.blowRadius) })
 
-    -- The funnel on its side, its bowl away from the can.
     local away = funnel - can
     self.funnelSpot = { at = onGround(funnel, 0.0), heading = math.deg(math.atan(away.y, away.x)) }
     self:layFunnel()
     self.kitShown = true
 end
 
--- The siphon hose's end put down off the can ---------------------------------------------------------
--- Let go of over the can once it is out, the hose would fall where it hangs: often off the far end,
--- pulling it across the top and over the cap that goes back on next. Its end is laid on the ground off
--- the side the hose comes down instead (nothing is pulled across the top that way), and whatever still
--- rests on the can, its funnel or its neck slides off towards that side (slideOff, the colliders above).
+-- Let go of over the can, the hose would fall across the top where the cap goes back on, so its end
+-- is laid off the side the hose comes down and what still rests on the can slides off that way.
 
----Is p (world) on the can: over it and no lower than its shoulder (on it, on the funnel in it, or above)?
 function SiphonProps:onCan(p)
     local q = Vec.unrotate(self.canRot, p - self.canPos)
     return math.abs(q.x) <= CAN.size.x / 2 + 0.005 and math.abs(q.y) <= CAN.size.y / 2 + 0.005 and q.z >= CAN.top - 0.02
 end
 
----Straight out of the can's nearest side (or corner) from q (can space), level.
 local function outOfCan(q)
     local ox, oy = math.abs(q.x) - CAN.size.x / 2, math.abs(q.y) - CAN.size.y / 2
     local sx, sy = q.x < 0.0 and -1.0 or 1.0, q.y < 0.0 and -1.0 or 1.0
@@ -934,12 +845,10 @@ local function outOfCan(q)
     return vec3(0.0, sy, 0.0)
 end
 
----Where the siphon hose's end goes down and how it is carried there: { path, length (Rope.path), at,
----slide (can space: the way the rest slides off) }, or nil when none of it is on the can.
+-- Returns { path, length, at, slide } (slide: can space), or nil when none of it is on the can.
 function SiphonProps:hoseLay()
     local rope = self.siphon
     local n = rope.count
-    -- The hose comes down off the can at the node before the first one (from end 1) that is on it.
     local first
     for i = 1, n do
         if self:onCan(rope.p[i]) then first = i; break end
@@ -948,7 +857,7 @@ function SiphonProps:hoseLay()
     local leave = rope.p[math.max(1, first - 1)]
     local q = Vec.unrotate(self.canRot, leave - self.canPos)
     local out = outOfCan(q)
-    -- Out as far as the hose from there reaches along the ground (so it is drawn off the can, not across it).
+    -- so it's drawn off the can, not across it
     local slack = (n - first + 1) * rope.seg - math.max(0.0, leave.z - self.ground(leave.x, leave.y))
     local reach = Clamp(slack * 0.85, LAY_OUT[1], LAY_OUT[2])
     local hx, hy = CAN.size.x / 2 + 0.03, CAN.size.y / 2 + 0.03
@@ -966,7 +875,6 @@ function SiphonProps:hoseLay()
         end
         return true
     end
-    -- Straight out, or turned, or not as far, when the car, the player's legs or the funnel's spot is there.
     local function spot()
         local straight
         for _, scale in ipairs({ 1.0, 0.5 }) do
@@ -978,11 +886,10 @@ function SiphonProps:hoseLay()
                 straight = straight or p
             end
         end
-        return straight -- nowhere free
+        return straight
     end
     local at = spot()
 
-    -- Up over the can (and the funnel in it), across, and down.
     local start = rope.pins[n] or rope.p[n]
     local high = self.funnel.where == 'can' and FUNNEL.seat.z + FUNNEL.rim.top or CAN.size.z
     local over = math.max(start.z, self:can(vec3(0.0, 0.0, high)).z + LAY_CLEAR)
@@ -990,8 +897,7 @@ function SiphonProps:hoseLay()
     return { path = path, length = length, at = at, slide = out }
 end
 
----Once the hose has been put down, a hose that fell asleep still resting on the can is woken: it carries
----on sliding off.
+-- A hose that fell asleep still resting on the can is woken to carry on sliding off.
 function SiphonProps:keepSliding()
     if not self.slideOff then return end
     for _, rope in ipairs({ self.siphon, self.blow }) do
@@ -1006,11 +912,9 @@ function SiphonProps:keepSliding()
     end
 end
 
--- The funnel --------------------------------------------------------------------------------------
--- Funnel space (rig.lua): axis +Z, origin where its flange sits on the can's neck; its spout bends
--- towards +X. Its bellows are strung along the bend the way props/siphon/build.py does.
+-- Funnel space (rig.lua): +Z up, origin where its flange sits on the can's neck, spout bending towards +X.
+-- Its bellows are strung along the bend the way props/siphon/build.py does.
 
----The spout's joints (funnel space) bent `bend` degrees along an even arc, and its direction at the end.
 function SiphonProps.spoutPoints(bend)
     local piece, pieces = FUNNEL.spout.piece, FUNNEL.spout.pieces
     local length = piece * pieces
@@ -1023,7 +927,6 @@ function SiphonProps.spoutPoints(bend)
     return points, vec3(math.sin(k * length), 0.0, -math.cos(k * length))
 end
 
----How high fuel stands in the funnel with `litres` in it, and the bowl's radius there.
 function SiphonProps.funnelLevel(litres)
     local levels = FUNNEL.levels
     for i = 2, #levels do
@@ -1036,34 +939,29 @@ function SiphonProps.funnelLevel(litres)
     return levels[#levels][2], levels[#levels][3]
 end
 
----Where the funnel is (world) and how it is turned, as its state puts it.
 function SiphonProps:funnelPose()
     local f = self.funnel
     if f.where == 'can' then return self:can(FUNNEL.seat + vec3(0.0, 0.0, f.lift)), Mat.mul(self.canRot, FUNNEL_TURN) end
     return f.pos, f.rot
 end
 
----Where the funnel is drawn now (it may be on its way somewhere).
 function SiphonProps:funnelShown()
     local f = self.funnel
     if f.shownPos then return f.shownPos, f.shownRot end
     return self:funnelPose()
 end
 
----The middle of its bowl (world), where it is picked up.
 function SiphonProps:funnelCentre()
     local pos, rot = self:funnelShown()
     return pos + Mat.apply(rot, FUNNEL.hold)
 end
 
----The tip of its nozzle (world).
 function SiphonProps:nozzleTip()
     local pos, rot = self:funnelShown()
     local points, dir = SiphonProps.spoutPoints(self.funnel.shownBend)
     return pos + Mat.apply(rot, points[#points] + dir * FUNNEL.nozzle)
 end
 
----Lays the funnel on its side at its spot by the kit, moving it there over `time` seconds (or at once).
 function SiphonProps:layFunnel(time)
     local f, spot = self.funnel, self.funnelSpot
     local turn = Mat.axis('z', spot.heading)
@@ -1074,8 +972,6 @@ function SiphonProps:layFunnel(time)
     end
 end
 
----The funnel in the hand, upright, the middle of its bowl at `centre` (world). Picked up, it turns
----upright on the way.
 function SiphonProps:holdFunnel(centre)
     local f = self.funnel
     if f.where ~= 'held' then
@@ -1086,16 +982,13 @@ function SiphonProps:holdFunnel(centre)
     f.pos = centre - Mat.apply(f.rot, FUNNEL.hold)
 end
 
----Into the can, `lift` metres up out of its seat (the game lowers it), its spout straightening.
 function SiphonProps:seatFunnel(lift)
     local f = self.funnel
     f.where, f.bend, f.lift = 'can', 0.0, lift or 0.0
     if f.shownPos then f.move = { pos = f.shownPos, rot = f.shownRot, t = 0.0, time = 0.2 } end
 end
 
--- Caps --------------------------------------------------------------------------------------------
--- A cap's state: turn (radians counter-clockwise from seated), out (metres backed out), or `hang`
--- (the fuel cap on its strap) / `off` (the can cap on the shoulder). `move` blends from where it was.
+-- turn: radians counter-clockwise from seated, out: metres backed out, or hang / off. move blends from where it was.
 
 local function blended(cap, pos, rot, dt)
     local move = cap.move
@@ -1110,7 +1003,6 @@ local function blended(cap, pos, rot, dt)
     return pos, rot
 end
 
----Starts a cap moving smoothly from where it is shown now to wherever its state puts it.
 ---@param which 'fuelCap' | 'canCap'
 ---@param lift? vector3 how far it arcs out on the way (its space)
 function SiphonProps:moveCap(which, time, lift)
@@ -1119,7 +1011,6 @@ function SiphonProps:moveCap(which, time, lift)
     cap.move = { pos = cap.shownPos, rot = cap.shownRot, t = 0.0, time = time or 0.3, lift = lift }
 end
 
----The middle of the fuel cap's face and of the can cap's top (world), for picking them and rings.
 function SiphonProps:fuelCapCentre()
     local cap = self.fuelCap
     if not cap.shownPos then return self:filler(FILLER.cap.seat) end
@@ -1132,7 +1023,6 @@ function SiphonProps:canCapCentre()
     return self:can(cap.shownPos + Mat.apply(cap.shownRot, vec3(0.0, 0.0, CAN.cap.height * 0.6)))
 end
 
----The fuel cap: screwed (filler space), or hanging from its strap and swinging.
 function SiphonProps:fuelCapPose(dt)
     local cap = self.fuelCap
     local def = FILLER.cap
@@ -1148,7 +1038,6 @@ function SiphonProps:fuelCapPose(dt)
     return pos, rot, pos + Mat.apply(def.rot, def.eye) -- the strap's eye is on a swivel ring: it doesn't turn
 end
 
----Lets the fuel cap drop onto its strap.
 function SiphonProps:hangFuelCap()
     local cap = self.fuelCap
     local _, _, eye = self:fuelCapPose(0)
@@ -1172,7 +1061,6 @@ function SiphonProps:swingFuelCap(dt)
     end
 end
 
----The can cap: screwed (can space), or upside down on the shoulder.
 function SiphonProps:canCapPose()
     local cap = self.canCap
     local def = CAN.cap
@@ -1180,8 +1068,6 @@ function SiphonProps:canCapPose()
     local pos = def.seat + vec3(0.0, 0.0, cap.out)
     return pos, Mat.axis('z', math.deg(cap.turn)), pos + def.eye
 end
-
--- Drawing -----------------------------------------------------------------------------------------
 
 function SiphonProps:drawFiller(dt)
     local scene = self.scene
@@ -1223,8 +1109,7 @@ function SiphonProps:drawCan(dt)
     drawLine(self.canStrap, points, self:canDir(UP))
 end
 
----The funnel's pieces (o.funnelEntity, nozzleEntity, poolEntity, spoutEntities) at pos turned rot (world),
----its spout bent `bend` degrees, `level` litres standing in it when it is in the can; nil pos hides it.
+-- nil pos hides it
 local function drawFunnelAt(o, pos, rot, bend, level, inCan)
     if not pos then
         show(o.funnelEntity, false)
@@ -1240,7 +1125,6 @@ local function drawFunnelAt(o, pos, rot, bend, level, inCan)
     end
     put(o.nozzleEntity, pos + Mat.apply(rot, points[#points]), Mat.along(Mat.apply(rot, dir)))
 
-    -- Fuel standing in the bowl (upright, in the can): a disc as wide as the bowl at its level.
     if inCan and level > 0.002 then
         local z, r = SiphonProps.funnelLevel(level)
         local at = pos + rot.z * z
@@ -1265,7 +1149,6 @@ function SiphonProps:drawFunnel(dt)
     drawFunnelAt(self, pos, rot, f.shownBend, f.level, f.where == 'can')
 end
 
----Drops of fuel falling from `at` (world) to the ground.
 function SiphonProps:drip(at)
     for i, entity in ipairs(self.dropEntities) do
         if not self.drops[i] then
@@ -1292,10 +1175,9 @@ function SiphonProps:drawDrops(dt)
     end
 end
 
-local PHYSICS_STEP = 1 / 60 -- seconds: the hoses move at most this often, whatever the frame rate
+local PHYSICS_STEP = 1 / 60 -- seconds
 
----Moves the hoses on, at most PHYSICS_STEP apart: at 200 FPS they are worked out 60 times a second, not
----200 (the frames between draw them where they are). Below 60 FPS it is every frame, by the frame's time.
+-- At 200 FPS the hoses are worked out 60 times a second, not 200; below 60 FPS every frame.
 ---@return boolean stepped
 function SiphonProps:physics(dt)
     local due = (self.physicsDue or 0.0) + dt
@@ -1340,19 +1222,8 @@ function SiphonProps:update(dt)
     self:drawDrops(dt)
 end
 
--- Players nearby ------------------------------------------------------------------------------------
--- Others see the props through the mirror (TR.mirror). The filler, flap and fuel cap
--- are scene props and go as they are. The rest (two hoses of a hundred and more pieces, the can, the
--- funnel, the fuel) goes as game state: lists of integers in filler space (the car's own frame, so it
--- all sits on their copy of the car), which SiphonView draws there, eased between the updates.
---
---   fcap   hang, strap eye (filler space)
---   carry  can in the hand: pos, rot
---   can    pos, rot, cap off, cap pos, cap rot and strap eye (can space)
---   h1 h2  the siphon and blow hoses' nodes
---   fuel   metres of each hose down the filler, the fuel in the siphon hose from, to
---   funnel pos, rot, spout bend (0.1 degree), litres in it (ml), in the can
---   s1 s2  the spilling streams' points
+-- Hoses, can, funnel and fuel go as game state in filler space, so it sits on their copy of the car:
+-- fcap, carry, can, h1 h2 (hose nodes), fuel, funnel (bend in 0.1 degree, litres in ml), s1 s2 (streams)
 
 local MM, AXIS = 1000, 10000 -- positions in mm, rotation axes in ten-thousandths
 
@@ -1366,7 +1237,7 @@ local function packPos(list, p)
     list[n + 1], list[n + 2], list[n + 3] = int(p.x * MM), int(p.y * MM), int(p.z * MM)
 end
 
----A rotation as its Y and Z axes (no angles: nothing to go wrong pointing straight up).
+-- No angles: nothing to go wrong pointing straight up.
 local function packRot(list, m)
     local n = #list
     list[n + 1], list[n + 2], list[n + 3] = int(m.y.x * AXIS), int(m.y.y * AXIS), int(m.y.z * AXIS)
@@ -1385,7 +1256,6 @@ end
 
 SiphonProps.packPos, SiphonProps.packRot, SiphonProps.readPos, SiphonProps.readRot = packPos, packRot, readPos, readRot
 
----What the props show that players nearby need: set(key, list | false) for each key above.
 function SiphonProps:mirrorState(set)
     local rot = self.scene.rot
     local function pos(list, w) packPos(list, self:toFiller(w)) end
@@ -1420,7 +1290,7 @@ function SiphonProps:mirrorState(set)
     end
 
     if self.kitShown then
-        -- Every node in filler space, in numbers (toFiller without making vectors: a hundred of them).
+        -- toFiller without making vectors: a hundred of them
         local o, x, y, z = self.scene.pos, rot.x, rot.y, rot.z
         local ox, oy, oz = o.x, o.y, o.z
         for key, rope in pairs({ h1 = self.siphon, h2 = self.blow }) do
@@ -1470,10 +1340,9 @@ end
 local SiphonView = {}
 SiphonView.__index = SiphonView
 
-local EASE = 15.0 -- how fast what is drawn catches up with the updates (they come ~10 times a second)
+local EASE = 15.0 -- the updates come about 10 times a second
 
----Someone else's siphon as a player nearby sees it, drawn from the mirror's game state on their copy
----of the car (scene: the replica's). Waits for the models, so call it from a thread.
+-- Waits for the models, so call it from a thread.
 function SiphonProps.view(scene)
     scene:preload(MODELS)
     local at = scene.pos
@@ -1492,7 +1361,6 @@ function SiphonProps.view(scene)
     return self
 end
 
----Eases toward a target pose ({ pos, rot }), there at once the first time.
 local function ease(shown, target, k)
     if not shown then return target end
     if #(shown.pos - target.pos) < 0.0002 and #(shown.rot.y - target.rot.y) < 0.0005 and #(shown.rot.z - target.rot.z) < 0.0005 then
@@ -1501,7 +1369,7 @@ local function ease(shown, target, k)
     return { pos = Vec.lerp(shown.pos, target.pos, k), rot = Mat.blend(shown.rot, target.rot, k) }
 end
 
----@param state table the replica's game state (keys above)
+---@param state table
 ---@param fuelCap? table the replica's fuel cap part (filler space), for its strap
 function SiphonView:draw(state, fuelCap, dt)
     local scene = self.scene
@@ -1509,7 +1377,6 @@ function SiphonView:draw(state, fuelCap, dt)
     local function world(list, i) return scene:toWorld(readPos(list, i)) end
     local function pose(list, i) return { pos = world(list, i), rot = Mat.mul(scene.rot, readRot(list, i + 3)) } end
 
-    -- The hoses: eased node by node, then drawn as the player's are.
     local fuel = state.fuel
     for e, rope in ipairs({ self.siphon, self.blow }) do
         local list, view = state[e == 1 and 'h1' or 'h2'], e == 1 and self.siphonView or self.blowView
@@ -1547,7 +1414,6 @@ function SiphonView:draw(state, fuelCap, dt)
         drawLine(pieces, points)
     end
 
-    -- The fuel cap's strap, to its eye.
     local fcap = state.fcap
     if fcap and fuelCap then
         local target = readPos(fcap, 2)
@@ -1569,7 +1435,6 @@ function SiphonView:draw(state, fuelCap, dt)
         show(self.carried, false)
     end
 
-    -- The can, its cap and the cap's strap (can space).
     local can = state.can
     if can then
         self.canPose = ease(self.canPose, pose(can, 1), k)

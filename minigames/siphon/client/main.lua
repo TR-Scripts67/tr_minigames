@@ -3,20 +3,20 @@ local function t(key, vars) return TR.locale.t('siphon.' .. key, vars) end
 
 if not cfg.enabled then return end
 
-local REACH = 2.0 -- metres from the filler the player can start
+local REACH = 2.0 -- metres
 local busy = false
 
 local function notify(key, kind, vars)
     TR.notify.send({ description = t(key, vars), type = kind or 'error' })
 end
 
----Electric cars have no fuel to siphon (the native needs game build 3258).
+-- the native needs game build 3258
 local function isElectric(vehicle)
     local ok, electric = pcall(GetIsVehicleElectric, GetEntityModel(vehicle))
     return ok and electric == true
 end
 
--- The fillers of cars nearby, cached for a moment: a car without a petroltank bone needs a few rays.
+-- Cached for a moment: a car without a petroltank bone needs a few rays.
 local fillers = {}
 
 local function fillerNear(vehicle, ped)
@@ -31,7 +31,6 @@ local function fillerNear(vehicle, ped)
     return #(vec3(p.x - cached.pos.x, p.y - cached.pos.y, 0.0)) <= REACH
 end
 
----The car whose filler the player is standing at.
 local function nearestFiller(ped)
     local pos, best, bestDist = GetEntityCoords(ped), nil, 6.0
     for _, vehicle in ipairs(GetGamePool('CVehicle')) do
@@ -79,7 +78,7 @@ end
 
 RegisterCommand(cfg.command, function() siphon() end, false)
 
--- Fuel another player spilled nearby: the same petrol puddles here (they burn).
+-- Fuel another player spilled nearby: the puddles burn here too.
 RegisterNetEvent('tr_minigames:siphon:puddle', function(spills, litres)
     if not cfg.puddles or type(spills) ~= 'table' then return end
     for _, spill in ipairs(spills) do
@@ -95,8 +94,7 @@ end)
 -- For an inventory's "use" action, e.g. ox_inventory: client = { export = 'tr_minigames.siphon' }
 exports('siphon', function() siphon() end)
 
--- "Siphon fuel" at a car's filler, for servers with ox_target or qb-target. Not on tr_core's own
--- interaction (the default target), which would offer it at every car: there it's the command or the item's use.
+-- Not on tr_core's own interaction, which would offer it at every car.
 local hasTarget, targetSystem = pcall(TR.system, 'target')
 if cfg.target and hasTarget and targetSystem ~= 'tr_core' then
     TR.target.addGlobalVehicle({
@@ -112,7 +110,7 @@ if cfg.target and hasTarget and targetSystem ~= 'tr_core' then
     })
 end
 
--- Live tuning of the camera: /siphon_cam <x> <y> <z> <targetX> <targetY> <targetZ> [fov]
+-- /siphon_cam <x> <y> <z> <targetX> <targetY> <targetZ> [fov]
 if cfg.devMode then
     RegisterCommand('siphon_cam', function(_, args)
         local n = {}

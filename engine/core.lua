@@ -1,9 +1,3 @@
---[[
-    The 3D engine lives in tr_core, shared with every TR resource: TR.math (rotations), TR.scene
-    (props, camera, picking), TR.rope (hoses) and TR.mirror (players nearby see the game). The
-    minigames use it under these names.
-]]
-
 local math3d = TR.math
 Mat, Vec = math3d.Mat, math3d.Vec
 Lerp, Clamp, AngleDelta = math3d.lerp, math3d.clamp, math3d.angleDelta

@@ -1,4 +1,3 @@
--- tr_minigames items for ox_inventory (ESX, Qbox, or QBCore running ox_inventory).
 -- Paste these entries into ox_inventory/data/items.lua, inside the returned table.
 -- Images: copy install/images/*.png to ox_inventory/web/images/.
 

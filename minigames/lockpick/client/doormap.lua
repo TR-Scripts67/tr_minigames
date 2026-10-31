@@ -1,20 +1,5 @@
---[[
-    Reads a depth map of a door and finds where its lock should go. Pure maths, no natives: the
-    measuring is in autofit.lua, the tests in tests/autofit.lua.
-
-    Door space: u along the car (+ is forward), v up, h out of the door. A map is a grid of samples
-    { u, v, h, i, j } where h is nil if nothing was found there (a gap, a hole, glass) and
-    blocked = true if something was in the way far out (a mirror).
-
-        local map = DoorMap.grid(u0, u1, v0, v1, step)       -- samples to measure, h unset
-        local skin = DoorMap.fitSkin(map)                     -- the door's smooth surface
-        DoorMap.mark(map, skin)                               -- sample.feature: not plain skin
-        local handle = DoorMap.findHandle(map, anchor)        -- box { u0, u1, v0, v1 }
-        for _, c in ipairs(DoorMap.spots(handle, radius)) do  -- where to try, best first
-            if DoorMap.clear(map, c, radius) then ... end
-        end
-        local plane = DoorMap.fitPlane(samples)               -- h = a + b*u + c*v, worst residual
-]]
+-- Door space: u along the car (+ is forward), v up, h out of the door.
+-- h is nil where nothing was found (a gap, a hole, glass), blocked = true if something stood far out (a mirror).
 
 DoorMap = {}
 
@@ -37,7 +22,6 @@ function DoorMap.grid(u0, u1, v0, v1, step)
     return map
 end
 
----Solves a small linear system (Gaussian elimination with pivoting). nil if singular.
 local function solve(a, b)
     local n = #b
     for c = 1, n do
@@ -60,7 +44,6 @@ local function solve(a, b)
     return x
 end
 
----Least squares fit of h over `terms(u, v)` for the samples where keep(s) is true.
 local function leastSquares(samples, terms, keep)
     local n
     local ata, atb = {}, {}
@@ -90,7 +73,6 @@ local function evaluate(coef, terms, u, v)
     return h
 end
 
--- The door skin is smooth: a gentle curve along and up the door.
 local function quadratic(u, v) return { 1.0, u, v, u * u, u * v, v * v } end
 local function linear(u, v) return { 1.0, u, v } end
 
@@ -100,7 +82,6 @@ local function median(list)
     return list[(#list + 1) // 2]
 end
 
----The door's smooth surface, fitted so the handle, its pocket and seams don't pull it.
 ---@return { height: fun(u: number, v: number): number }?
 function DoorMap.fitSkin(map)
     -- Start from the plain median, then refit keeping only what's close to the last fit.
@@ -133,10 +114,7 @@ local function tricube(d, radius)
     return t * t * t
 end
 
----A quadratic for the paint in `near` around (gu, gv), in coordinates from there. Starts from
----`start` (start[s]: a first guess of the paint's height at each sample) and keeps refitting
----without what's far off the last fit, so a handle, a knob or a pocket in the middle doesn't pull
----it. nil if there's too little paint.
+-- Refits without what's far off the last fit, so a handle, knob or pocket doesn't pull it. nil if too little paint.
 local function fitAround(near, gu, gv, radius, start)
     if #near < 12 then return end
 
@@ -147,7 +125,6 @@ local function fitAround(near, gu, gv, radius, start)
     -- Wide enough at first for paint the start is well off (most of what's near is paint).
     local limit = math.max(0.012, 2.0 * sorted[math.max(1, math.floor(#sorted * 0.3))])
 
-    -- Per sample, once: where it is from the node, its weight and its terms.
     local count = #near
     local W, T = {}, {}
     for k, s in ipairs(near) do
@@ -199,11 +176,8 @@ local function fitAround(near, gu, gv, radius, start)
     return coef
 end
 
----The door's surface the way it curves around each place, for doors one smooth curve can't
----follow (the roll-over under the window, a lower door tucking under, a body line): a quadratic
----fitted to the paint within `radius` every few centimetres, blended between them. Starts from
----`skin` (DoorMap.fitSkin). Same use as fitSkin's: { height(u, v) }. `pause`, if given, is called
----now and then (in game: a frame's wait, so the work doesn't freeze the screen).
+-- For doors one smooth curve can't follow (the roll-over under the window, a body line).
+-- pause, if given, is called now and then so the work doesn't freeze the screen.
 function DoorMap.localSkin(map, skin, radius, pause)
     radius = radius or 0.08
     local step, grid = map.step, map.at
@@ -243,7 +217,6 @@ function DoorMap.localSkin(map, skin, radius, pause)
         if pause then pause() end
     end
 
-    -- The lattice nodes either side of fractional grid index x, and how far between them.
     local function bracket(L, x)
         if x <= L[1] then return 1, 1, 0.0 end
         if x >= L[#L] then return #L, #L, 0.0 end
@@ -272,7 +245,7 @@ function DoorMap.localSkin(map, skin, radius, pause)
     return { height = height }
 end
 
----Marks every sample that isn't plain skin: s.feature = true (and s.off, metres off the skin).
+-- s.feature = true, s.off: metres off the skin
 function DoorMap.mark(map, skin, tolerance)
     tolerance = tolerance or FEATURE
     for _, s in ipairs(map.samples) do
@@ -285,7 +258,7 @@ function DoorMap.mark(map, skin, tolerance)
     end
 end
 
----Groups neighbouring feature samples. Each group: { samples, u0, u1, v0, v1, out, deep }.
+-- Each group: { samples, u0, u1, v0, v1, out, deep }
 function DoorMap.groups(map)
     local seen, groups = {}, {}
     for _, start in ipairs(map.samples) do
@@ -320,16 +293,13 @@ function DoorMap.groups(map)
     return groups
 end
 
----Does a group look like a door handle (with its pocket)? Long, not tall, mostly filled.
 local function handleLike(g)
     local w, h = g.u1 - g.u0, g.v1 - g.v0
     if w < 0.05 or w > 0.36 or h < 0.012 or h > 0.11 or w < h * 1.4 then return false end
     return true
 end
 
----The handle around its bone, read column by column so trim strips and body lines running along
----the door (which join up with the handle as one feature) don't count: a column is part of the
----handle if more stands out of the skin near the bone's height than in a typical column.
+-- Read column by column so trim strips and body lines that join up with the handle don't count.
 local function handleAtBone(map, anchor)
     local a, best
     for _, s in ipairs(map.samples) do
@@ -338,8 +308,7 @@ local function handleAtBone(map, anchor)
     end
     if not a then return end
 
-    -- What a handle is made of: things standing out, or a pocket. Not glass or gaps (nothing
-    -- measured, or far deeper than a pocket), which run along the whole door above the handle.
+    -- Not glass or gaps, which run along the whole door above the handle.
     local function part(s) return s ~= nil and (s.blocked or (s.feature and s.off ~= nil and s.off > -0.025)) end
 
     local band = math.max(2, math.floor(0.05 / map.step + 0.5)) -- rows either side of the bone
@@ -360,13 +329,11 @@ local function handleAtBone(map, anchor)
     end
     if not i0 then return end
 
-    -- Along the car from the bone, over gaps of one column.
     local i1 = i0
     while stands(i0 - 1) or stands(i0 - 2) do i0 = stands(i0 - 1) and i0 - 1 or i0 - 2 end
     while stands(i1 + 1) or stands(i1 + 2) do i1 = stands(i1 + 1) and i1 + 1 or i1 + 2 end
     if (i1 - i0 + 1) * map.step > 0.40 then return end -- runs the whole way: nothing stands out
 
-    -- Up and down: rows that stand out over most of those columns.
     local function row(j)
         local c, n = 0, 0
         for i = i0, i1 do
@@ -382,7 +349,6 @@ local function handleAtBone(map, anchor)
     while j0 - 1 >= a.j - band and row(j0 - 1) do j0 = j0 - 1 end
     while j1 + 1 <= a.j + band and row(j1 + 1) do j1 = j1 + 1 end
 
-    -- The thing's real edge can be anywhere up to the next sample, which missed it.
     local pad = map.step
     return {
         u0 = map.at[i0][a.j].gu - pad, u1 = map.at[i1][a.j].gu + pad,
@@ -391,8 +357,7 @@ local function handleAtBone(map, anchor)
     }
 end
 
----The handle: the feature group around `anchor` (the handle's bone, door space) if given,
----otherwise the most handle-like group. Returns its box, and false if it was only guessed.
+-- found is false if it was only guessed
 ---@return { u0: number, u1: number, v0: number, v1: number, found: boolean }?
 function DoorMap.findHandle(map, anchor)
     if anchor then
@@ -425,15 +390,13 @@ function DoorMap.findHandle(map, anchor)
     end
 end
 
----Where to try putting a lock of `radius` next to the handle, best first: just ahead of it (the
----side the minigame's camera looks from), then behind it, then under it.
+-- Ahead of the handle first (the side the camera looks from), then behind it, then under it.
 ---@return { u: number, v: number, side: string }[]
 function DoorMap.spots(handle, radius)
     local list = {}
     local vc, uc = (handle.v0 + handle.v1) * 0.5, (handle.u0 + handle.u1) * 0.5
     local function add(side, u, v, cost) list[#list + 1] = { u = u, v = v, side = side, cost = cost } end
 
-    -- A guessed handle can be much longer than the guess: look further along.
     for gap = 0.004, handle.found == false and 0.16 or 0.08, 0.004 do
         for _, dv in ipairs({ 0.0, 0.006, -0.006, 0.012, -0.012, 0.024, -0.024 }) do
             local cost = gap + math.abs(dv) * 0.5
@@ -449,9 +412,6 @@ end
 
 local STEPS = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }
 
----Small things standing out of the skin near the handle on their own: maybe the car's own lock
----cylinder (older cars have a round one by the handle). Closest to the handle first; then the
----small things it passed over, with why (for the log).
 ---@return { u: number, v: number, distance: number }[] candidates
 ---@return { u: number, v: number, distance: number, why: string }[] rejected
 function DoorMap.lockCandidates(map, handle)
@@ -476,7 +436,6 @@ function DoorMap.lockCandidates(map, handle)
                 end
             end
 
-            -- No bigger than about 6 cm (a knob on a round base), with plain skin around it.
             local i0, i1, j0, j1 = math.huge, -math.huge, math.huge, -math.huge
             local su, sv, sw = 0.0, 0.0, 0.0
             for _, s in ipairs(blob) do
@@ -484,7 +443,6 @@ function DoorMap.lockCandidates(map, handle)
                 local w = s.off or 0.03
                 su, sv, sw = su + s.gu * w, sv + s.gv * w, sw + w
             end
-            -- (Most of the ring around it plain: a body line may pass close by.)
             local around, busy = 0, 0
             for i = i0 - 1, i1 + 1 do
                 for j = j0 - 1, j1 + 1 do
@@ -521,8 +479,6 @@ function DoorMap.lockCandidates(map, handle)
     return out, rejected
 end
 
----A knob in a fine map around `c` (`window` either side): what stands out of the paint around it,
----round and small, not running off the map. Returns its middle and radius, or nil and why.
 ---@return { u: number, v: number, radius: number, height: number }?
 ---@return string? why
 function DoorMap.findKnob(fine, c, window)
@@ -534,7 +490,6 @@ function DoorMap.findKnob(fine, c, window)
     local coef = #outer >= 12 and leastSquares(outer, quadratic, function() return true end)
     if not coef then return nil, 'no paint around it' end
 
-    -- Blocked: something stood out further than the search went, which a knob may well do.
     local function above(s) return s and s.h and s.h - evaluate(coef, quadratic, s.u, s.v) or nil end
     local function raised(s) return s ~= nil and (s.blocked or (above(s) or 0) > 0.0015) end
 
@@ -577,9 +532,6 @@ function DoorMap.findKnob(fine, c, window)
     return { u = su / sw, v = sv / sw, radius = radius, height = top }
 end
 
----The spots worth a closer look, best first, at most `count` and none within `radius` of a better
----one. On the door map nothing may be missing around a spot and the paint there has to be close
----to flat (within `rough` of a plane); the flatter and the closer to the handle, the better.
 function DoorMap.pick(map, candidates, radius, rough, count)
     local ok = {}
     for _, c in ipairs(candidates) do
@@ -606,7 +558,6 @@ function DoorMap.pick(map, candidates, radius, rough, count)
     return out
 end
 
----Samples within `radius` of c.
 function DoorMap.near(map, c, radius)
     local out = {}
     for _, s in ipairs(map.samples) do
@@ -616,7 +567,6 @@ function DoorMap.near(map, c, radius)
     return out
 end
 
----True if everything within `radius` of c is plain skin (and there are samples to tell).
 function DoorMap.clear(map, c, radius)
     local near = DoorMap.near(map, c, radius + map.step * 0.5)
     if #near == 0 then return false end
@@ -626,11 +576,8 @@ function DoorMap.clear(map, c, radius)
     return true
 end
 
----How a flat ring of `radius` around c would sit on the measured samples: tilted to rest on the
----paint's high points with as little gap under it as it can get, like a real lock's bezel. Nothing
----measured stands in front of it. nil if a sample under it is missing (a gap, a hole).
----@return { a: number, b: number, c: number, gap: number, worst: number }? the ring's back is at
----h = a + b*(u - c.u) + c*(v - c.v); gap: mean distance to the paint under it, worst: largest
+-- Tilted to rest on the paint's high points like a real bezel. The ring's back is at h = a + b*(u - c.u) + c*(v - c.v).
+---@return { a: number, b: number, c: number, gap: number, worst: number }?
 function DoorMap.seat(samples, c, radius)
     local under = {}
     for _, s in ipairs(samples) do
@@ -654,7 +601,6 @@ function DoorMap.seat(samples, c, radius)
         return { a = a, b = b, c = cc, gap = sum / #under, worst = worst }
     end
 
-    -- Pattern search over the two slopes, from the least squares plane.
     local best = rest(start.b, start.c)
     for _, step in ipairs({ 0.04, 0.01, 0.0025, 0.0006 }) do
         local moved = true
@@ -672,8 +618,7 @@ function DoorMap.seat(samples, c, radius)
     return best
 end
 
----Plane through samples: h = a + b*u + c*v. Returns { a, b, c, worst } (worst: largest
----residual) or nil when there aren't enough samples or any is missing.
+-- h = a + b*u + c*v; worst: largest residual. nil if too few samples or any is missing.
 function DoorMap.fitPlane(samples)
     for _, s in ipairs(samples) do if not s.h then return end end
     local coef = leastSquares(samples, linear, function() return true end)

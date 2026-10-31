@@ -1,8 +1,4 @@
--- The server owns every siphon attempt: who may start, how many puffs prime the hose, and how much
--- fuel came out. An attempt goes setup -> prime -> flow. The client reports puffs and the fuel it
--- spilled; the litres come from the server's own clock (flow time x flow rate),
--- capped by the fuel above the reserve. What doesn't fit in the can (or the client says missed it)
--- spills on the ground.
+-- The litres come from the server's own clock (flow time x flow rate), capped by the fuel above the reserve.
 
 local cfg = Config.siphon
 
@@ -11,7 +7,7 @@ if not cfg.enabled then return end
 Mirror.allowProps('tr_sf_')
 
 local QB_FULL_CAN = 4500 -- GTA's petrol can ammo when full (qb-inventory keeps it in info.ammo)
-local SPILL_REACH = 6.0  -- metres from the player a spill can be
+local SPILL_REACH = 6.0  -- metres
 local PUDDLE_RANGE = 80.0
 
 local sessions = {} ---@type table<integer, table>
@@ -22,12 +18,9 @@ local function tankLitres(class)
     return cfg.classTank[class] or cfg.tankLitres
 end
 
--- Jerry cans ---------------------------------------------------------------------------------------
-
 local qbCans = TR.system('inventory') == 'qb_inventory'
 
----Percent of fuel in a can's metadata. ox_inventory gives a new can durability 100 (full); a qb can
----without ammo is empty.
+-- ox_inventory gives a new can durability 100 (full); a qb can without ammo is empty.
 local function canFuel(metadata)
     if qbCans then return math.min(100, (tonumber(metadata.ammo) or 0) / QB_FULL_CAN * 100) end
     return math.min(100, tonumber(metadata.durability) or 100)
@@ -45,7 +38,7 @@ local function withFuel(metadata, percent)
     return copy
 end
 
----The can to fill: the fullest that still has room (topping one up beats starting another).
+-- The fullest that still has room: topping one up beats starting another.
 ---@return TRSlot? slot
 ---@return number fuel percent
 ---@return number room litres
@@ -59,8 +52,6 @@ local function pickCan(src)
     return best, bestFuel, (100 - bestFuel) / 100 * cfg.can.litres
 end
 
--- Attempts -----------------------------------------------------------------------------------------
-
 local function isLocked(vehicle)
     return GetVehicleDoorLockStatus(vehicle) > 1
 end
@@ -70,8 +61,7 @@ local function nearVehicle(src, vehicle)
     return #(GetEntityCoords(ped) - GetEntityCoords(vehicle)) <= cfg.reach and GetVehiclePedIsIn(ped, false) == 0
 end
 
----Returns the player's running attempt, ending it when it is no longer valid. Fuel that was running
----when it ends spills: nothing reaches the can.
+-- Fuel that was running when it ends spills: nothing reaches the can.
 local function current(src)
     local s = sessions[src]
     if not s then return nil, 'no_session' end
@@ -95,7 +85,7 @@ local function current(src)
     return s
 end
 
----Ends an attempt. `siphoned`: fuel came out, so the car rests too (carCooldown).
+-- siphoned: fuel came out, so the car rests too (carCooldown)
 local function finish(src, s, siphoned)
     sessions[src] = nil
     cooldowns[src] = os.time() + cfg.cooldown
@@ -125,7 +115,7 @@ TR.callback.register('tr_minigames:siphon:start', function(src, netId, class)
     local can, canFuelNow, room = pickCan(src)
     if not can then return false, 'no_can' end
 
-    -- The class sets the tank's size (litres per percent): checked against another player's game.
+    -- The class sets the tank's size: checked against another player's game.
     class = Vehicles.class(src, vehicle, class)
     if cfg.blockedClasses[class] then return false, 'wrong_vehicle' end
 
@@ -161,7 +151,7 @@ TR.callback.register('tr_minigames:siphon:start', function(src, netId, class)
         available = available, -- litres that can come out before the tank is down to the reserve
         room = room,           -- litres the can still holds; more spills over its neck
         canLitres = cfg.can.litres,
-        can = canFuelNow,      -- percent already in the can
+        can = canFuelNow,      -- percent
         tank = fuel,           -- percent in the car's tank: how deep the fuel is in the neck
     }
 end, {
@@ -172,7 +162,6 @@ end, {
     rateLimit = { max = 2, window = 2000 },
 })
 
--- The setup is done: the funnel in the can, both hoses in.
 TR.callback.register('tr_minigames:siphon:ready', function(src)
     local s, reason = current(src)
     if not s then return false, reason end
@@ -186,9 +175,7 @@ end, {
     rateLimit = { max = 2, window = 1000 },
 })
 
--- A puff into the blow hose, as the client judged it: 'good', 'weak' (nothing happens) or 'hard'
--- (fuel surges into the player's mouth: a strike, and the fuel falls back to the tank). The fuel runs
--- once there have been as many good puffs as it needs.
+-- kind: 'good', 'weak' (nothing happens) or 'hard' (fuel in the mouth: a strike).
 TR.callback.register('tr_minigames:siphon:puff', function(src, kind)
     local s, reason = current(src)
     if not s then return false, reason end
@@ -220,7 +207,7 @@ end, {
     rateLimit = { max = 3, window = 1000 },
 })
 
----Sends a puddle of spilled fuel to every player near it (the spiller drew theirs as it spilled).
+-- The spiller drew theirs as it spilled.
 local function puddles(src, spills, litres)
     if not cfg.puddles or litres < 0.2 or not spills then return end
     local ped = GetEntityCoords(GetPlayerPed(src))
@@ -239,9 +226,7 @@ local function puddles(src, spills, litres)
     end
 end
 
--- The player pulls the hose (or the tank ran dry). The fuel that ran since the hose primed leaves the
--- car; what fits goes in the can, the rest (and what the client says missed the can) spills.
--- spilled: litres that missed the can. spills: { { at = vector3, share = 0..1 } } where it went.
+-- spilled: litres that missed the can. spills: { { at = vector3, share = 0..1 } }
 TR.callback.register('tr_minigames:siphon:stop', function(src, spilled, spills)
     local s, reason = current(src)
     if not s then return false, reason end
@@ -307,6 +292,4 @@ AddEventHandler('playerDropped', function()
     cooldowns[source] = nil
 end)
 
--- Hook for logs, XP, stress or police scripts: a player siphoned fuel out of a car into a jerry can.
--- litres went into the can; spilled is what ended up on the ground.
--- AddEventHandler('tr_minigames:siphon:siphoned', function(src, netId, plate, litres, spilled) end)
+-- Event for logs, XP or police scripts: 'tr_minigames:siphon:siphoned' (src, netId, plate, litres, spilled)

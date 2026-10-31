@@ -1,7 +1,4 @@
--- The server owns every lock and every attempt: which wafer positions are filled, how deep each
--- wafer has to be lifted, the order they bind in, strikes, and when the door unlocks. The client
--- only animates and reports what the player did. It learns a wafer's depth when the player feels
--- that wafer bind under tension, never before.
+-- The client learns a wafer's depth only when the player feels it bind, never before.
 
 local cfg = Config.lockpick
 local Rig = Lockpick.rig
@@ -17,6 +14,10 @@ local MAX_LOCKS = 2000
 local locks = {}    ---@type table<string, table> by plate: the same car keeps the same lock
 local lockCount = 0
 local sessions = {} ---@type table<integer, table>
+
+local excluded, modelDifficulty = {}, {}
+for _, name in ipairs(cfg.excludeModels) do excluded[joaat(name)] = true end
+for name, tier in pairs(cfg.modelDifficulty) do modelDifficulty[joaat(name)] = tier end
 
 local function shuffled(list)
     for i = #list, 2, -1 do
@@ -42,7 +43,6 @@ local function newLock(tierName)
     return lock
 end
 
----The vehicle's lock. A car keeps its lock (layout, depths, binding order) until a restart.
 local function lockFor(vehicle, class)
     local plate = TR.keys.plate(vehicle)
     local key = plate ~= '' and plate or ('net:%d'):format(NetworkGetNetworkIdFromEntity(vehicle))
@@ -52,7 +52,7 @@ local function lockFor(vehicle, class)
         if lockCount >= MAX_LOCKS then
             locks, lockCount = {}, 0
         end
-        lock = newLock(cfg.classDifficulty[class] or cfg.defaultDifficulty)
+        lock = newLock(modelDifficulty[GetEntityModel(vehicle)] or cfg.classDifficulty[class] or cfg.defaultDifficulty)
         locks[key], lockCount = lock, lockCount + 1
     end
 
@@ -60,7 +60,6 @@ local function lockFor(vehicle, class)
     return lock
 end
 
----The wafer that binds next: the first in the lock's order that isn't set.
 local function binding(s)
     for _, pos in ipairs(s.lock.order) do
         if not s.set[pos] then return pos end
@@ -76,7 +75,7 @@ local function nearVehicle(src, vehicle)
     return #(GetEntityCoords(ped) - GetEntityCoords(vehicle)) <= 6.0 and GetVehiclePedIsIn(ped, false) == 0
 end
 
----Returns the player's running attempt, ending it when it is no longer valid.
+-- Ends the attempt when it's no longer valid.
 local function current(src)
     local s = sessions[src]
     if not s then return nil, 'no_session' end
@@ -100,8 +99,7 @@ local function current(src)
     return s
 end
 
----Tension on (epoch > 0) or off (0). Every new grip on the tension starts from scratch: letting
----go drops every set wafer and frees a jammed one. Old requests from an earlier grip are stale.
+-- A new grip starts from scratch, so requests from an earlier grip are stale.
 ---@return boolean fresh
 local function grip(s, epoch)
     if epoch == 0 then return true end
@@ -116,7 +114,6 @@ local function alarm(src, s, reason)
     TriggerEvent('tr_minigames:lockpick:alarm', src, NetworkGetNetworkIdFromEntity(s.vehicle), GetEntityCoords(s.vehicle), reason)
 end
 
----The third bend: the pick's tip snaps off in the lock, which jams it for a while.
 local function snap(src, s)
     sessions[src] = nil
 
@@ -152,13 +149,15 @@ end
 TR.callback.register('tr_minigames:lockpick:start', function(src, netId, door, class)
     if sessions[src] and current(src) then return false, 'busy' end
 
-    local wanted = false
+    local wanted = door == 'bike' -- a bike's lock is its ignition
     for _, allowed in ipairs(cfg.doors) do wanted = wanted or allowed == door end
     if not wanted then return false, 'no_lock' end
 
     local vehicle = NetworkGetEntityFromNetworkId(netId)
     if vehicle == 0 or not DoesEntityExist(vehicle) then return false, 'no_lock' end
-    if not cfg.vehicleTypes[GetVehicleType(vehicle)] then return false, 'wrong_vehicle' end
+    local kind = GetVehicleType(vehicle)
+    if not cfg.vehicleTypes[kind] or excluded[GetEntityModel(vehicle)] then return false, 'wrong_vehicle' end
+    if (door == 'bike') ~= (kind == 'bike') then return false, 'wrong_vehicle' end
     if not nearVehicle(src, vehicle) then return false, 'too_far' end
     if GetPedInVehicleSeat(vehicle, -1) ~= 0 then return false, 'occupied' end
 
@@ -173,11 +172,11 @@ TR.callback.register('tr_minigames:lockpick:start', function(src, netId, door, c
 
     if cfg.item and not TR.inventory.hasItem(src, cfg.item) then return false, 'no_item' end
 
-    -- How hard the lock is and whether its alarm goes off: checked against another player's game, which
-    -- may take a moment, so the car and the player are looked at again after.
+    -- Checked against another player's game, which may take a moment, so the car and player are checked again after.
     class = Vehicles.class(src, vehicle, class)
     if sessions[src] then return false, 'busy' end
     if not DoesEntityExist(vehicle) then return false, 'no_lock' end
+    if kind == 'bike' and class == 13 then return false, 'wrong_vehicle' end -- a bicycle
 
     local lock = lockFor(vehicle, class)
     Mirror.start(src, vehicle, { active = function() return sessions[src] ~= nil end, maxDuration = cfg.timeLimit + 10 })
@@ -210,8 +209,7 @@ end, {
 local function positionArg() return { type = 'integer', min = 1, max = POSITIONS } end
 local function epochArg() return { type = 'integer', min = 0, max = 100000 } end
 
--- What the pick feels at a position: 'empty', 'spring' (a wafer that moves freely), 'binding'
--- (stiff: the one to lift; with its depth), 'set' (with its depth) or 'stuck' (overset, jammed).
+-- Answers 'empty', 'spring', 'binding' (with its depth), 'set' (with its depth) or 'stuck'.
 TR.callback.register('tr_minigames:lockpick:probe', function(src, pos, epoch)
     local s, reason = current(src)
     if not s then return false, reason end
@@ -229,7 +227,7 @@ end, {
     rateLimit = { max = 12, window = 1000 },
 })
 
--- The binding wafer reached its shear line. lift: how high the pick had it, in µm.
+-- lift: µm
 TR.callback.register('tr_minigames:lockpick:set', function(src, pos, epoch, lift)
     local s, reason = current(src)
     if not s then return false, reason end
@@ -241,7 +239,6 @@ TR.callback.register('tr_minigames:lockpick:set', function(src, pos, epoch, lift
     s.set[pos] = true
     if binding(s) then return 'set' end
 
-    -- Every wafer is at its shear line: the plug turns.
     if os.time() - s.started < cfg.minTime then
         TR.guard.flag(src, 'tr_minigames:lockpick: picked faster than possible')
         sessions[src] = nil
@@ -254,7 +251,6 @@ end, {
     rateLimit = { max = 4, window = 1000 },
 })
 
--- A set (or binding) wafer pushed past its shear line: it jams until the tension is let off.
 TR.callback.register('tr_minigames:lockpick:overset', function(src, pos, epoch)
     local s, reason = current(src)
     if not s then return false, reason end
@@ -269,7 +265,7 @@ end, {
     rateLimit = { max = 4, window = 1000 },
 })
 
--- Forcing a stiff wafer bent the pick. Only ever hurts the player, so the client may report it.
+-- Only ever hurts the player, so the client may report it.
 TR.callback.register('tr_minigames:lockpick:bend', function(src)
     local s, reason = current(src)
     if not s then return false, reason end
@@ -296,9 +292,6 @@ AddEventHandler('playerDropped', function()
     sessions[source] = nil
 end)
 
--- Hook for dispatch scripts: a car alarm went off because of a lockpick.
--- AddEventHandler('tr_minigames:lockpick:alarm', function(src, netId, coords, reason) end)
--- reason: 'failed' (the pick snapped) or 'opened' (picked, and the alarm goes off as the door opens)
+-- Event for dispatch scripts: 'tr_minigames:lockpick:alarm' (src, netId, coords, reason: 'failed' or 'opened')
 
--- Hook for logs, XP, stress or police scripts: a player picked a car's lock (the door is now unlocked).
--- AddEventHandler('tr_minigames:lockpick:picked', function(src, netId, plate) end)
+-- Event for logs, XP or police scripts: 'tr_minigames:lockpick:picked' (src, netId, plate)

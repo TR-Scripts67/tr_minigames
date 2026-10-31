@@ -1,11 +1,4 @@
---[[
-    The siphon's setup and pack-up, one step at a time (game.lua runs them, the blow method and the
-    flow are in game.lua). Each step is { enter = fn(game), update = fn(game, dt), packing? }.
-
-    Setup:   place, carry, putdown, cancap, funnel, walk, fillercap, hose, feed, canhose, blowhose
-    Blowing: prime, flow
-    Pack-up: unpack, fillercapon, walkcan, canout, funnelout, cancapon, pickup (ESC skips the rest)
-]]
+-- Each step is { enter = fn(game), update = fn(game, dt), packing? }.
 
 local RIG = Siphon.rig
 local FILLER, CAN, PUTDOWN, FUNNEL = RIG.filler, RIG.can, RIG.putdown, RIG.funnel
@@ -22,24 +15,23 @@ Game.ORDER = {
 }
 
 local DOWN = vec3(0.0, 0.0, -1.0)
-local HOLD_FRAME = PUTDOWN.release + 4 -- the putdown clip held here: crouched by the can, hand off the bar
-local PLACE_MAX = 1.0                  -- metres along the ground from the filler the can may stand
-local ROTATE = 15.0                    -- degrees the can turns per wheel notch
+local HOLD_FRAME = PUTDOWN.release + 4 -- crouched by the can, hand off the bar
+local PLACE_MAX = 1.0                  -- metres along the ground from the filler
+local ROTATE = 15.0                    -- degrees per wheel notch
 local PULL_SPEED = 0.3
 local WHEEL_STEP = 0.02
-local SEND_TIME = 0.75                 -- seconds a clicked hose end takes to its hole
-local FEED_SPEED = 0.32                -- metres a second a hose goes down the filler by itself
-local FEED_PAST = 0.07                 -- metres past where it reaches the fuel it is pushed
-local CAN_SPEED = 0.25                 -- metres a second it goes down into the can (and comes out)
-local CAN_PAST = 0.03                  -- metres deeper than the flow needs (Game.GOOD_DEPTH) it goes
+local SEND_TIME = 0.75                 -- seconds
+local FEED_SPEED = 0.32                -- metres a second
+local FEED_PAST = 0.07                 -- metres past where it reaches the fuel
+local CAN_SPEED = 0.25                 -- metres a second
+local CAN_PAST = 0.03                  -- metres deeper than Game.GOOD_DEPTH
 local BENDS = { 0.12, 0.22 }           -- metres down the filler neck where the hose bumps round a bend
 local BLOW_DEPTH = 0.09
 local SEAT_HIGH = 0.03                 -- metres over the neck the nozzle's tip is when the funnel is lined up
-local DROP_TIME = 0.4                  -- seconds it slides down into the neck
+local DROP_TIME = 0.4                  -- seconds
 local STRAIGHTEN = 0.15                -- metres from over the neck the spout starts to straighten
-local LAY_TIME = 0.9                   -- seconds the siphon hose's end takes from over the can to the ground
+local LAY_TIME = 0.9                   -- seconds
 
--- The setup's checklist on the HUD: which steps belong to which entry.
 local GROUPS = {
     { label = 'tool_can', from = 'place', to = 'cancap' },
     { label = 'tool_funnel', from = 'funnel', to = 'funnel' },
@@ -71,9 +63,7 @@ local function hint(self, key, keys, sub)
     if not packing and indexOf(self.step) < indexOf('prime') then checklist(self) end
 end
 
--- Shared hands ------------------------------------------------------------------------------------
-
----Turning a cap of `radius` metres: hold LMB on it and circle. h = { screw }. Returns the screw's events.
+-- radius: metres. h = { screw }. Returns the screw's events.
 function Game:screwStep(h, centre, radius)
     local events = {}
     -- The ring goes round the cap's rim as it is on screen, and anywhere on the cap picks it.
@@ -96,8 +86,7 @@ function Game:screwStep(h, centre, radius)
     return events
 end
 
----The way a hose end is carried from `from` to a hole at `target` it goes into along `into` (world): up
----off where it lies, over, and down in line with the hole. A smooth curve (Rope.path: at(s), length).
+-- Returns a smooth curve (Rope.path: at(s), length).
 function Game.sendPath(from, target, into)
     local before = target - into * 0.08 -- just outside the hole, lined up with it
     local up = math.max(from.z, before.z) + 0.15
@@ -112,8 +101,7 @@ function Game.sendPath(from, target, into)
     return Rope.path(points)
 end
 
----Hose end e (1 or 2) of `rope`: clicked, it goes to `target` (world) by itself and lines up to go in along
----`into`. `label`: what its marker says. Returns true the frame it gets there (its pins let go).
+-- e: 1 or 2. label: what its marker says. Returns true the frame it gets there (its pins let go).
 function Game:sendEnd(dt, rope, e, target, into, label)
     local i = e == 1 and 1 or rope.count
     local j = e == 1 and 2 or rope.count - 1
@@ -143,8 +131,6 @@ function Game:sendEnd(dt, rope, e, target, into, label)
     return true
 end
 
----How deep the siphon hose can go into the can (past the top of its neck) with what is left of it
----outside the filler, down through the funnel.
 function Game:canReach()
     local props, rope = self.props, self.props.siphon
     local fed = rope.ends[1] and rope.ends[1].fed or 0.0
@@ -153,8 +139,7 @@ function Game:canReach()
         props.neckDepth - 0.005)
 end
 
----The can in the right hand while it is carried and set down, by the putdown clip's frame. Over the
----last frames before it is let go it settles exactly where it was meant to go.
+-- Over the last frames before it's let go it settles exactly where it was meant to go.
 function Game:carryCan(frame)
     local ped = PlayerPedId()
     local heading = GetEntityHeading(ped)
@@ -173,7 +158,6 @@ function Game:carryCan(frame)
     self.props:carry(pos, rot)
 end
 
----Where the player stands to put the can down at pos turned to canHeading, and which way they face.
 function Game:standSpot(pos, canHeading)
     local heading = canHeading - PUTDOWN.canHeading
     local rest = PUTDOWN.canRest
@@ -181,14 +165,11 @@ function Game:standSpot(pos, canHeading)
     return vec3(spot.x, spot.y, pos.z - rest.z), heading
 end
 
--- Place: where the can goes -------------------------------------------------------------------------
-
 local function probe(a, b, flags, ignore)
     local _, hit, pos, _, entity = GetShapeTestResult(StartExpensiveSynchronousShapeTestLosProbe(a.x, a.y, a.z, b.x, b.y, b.z, flags, ignore, 7))
     if hit == true or hit == 1 then return pos, entity end
 end
 
----The ground under the cursor (world), or nil; and 'spot_car' when it points at the car.
 function Game:spotUnderCursor()
     local props = self.props
     local origin, dir = props.scene:ray(self.mx, self.my)
@@ -199,8 +180,7 @@ function Game:spotUnderCursor()
     return vec3(pos.x, pos.y, found and ground or pos.z)
 end
 
----Would the can at pos turned to heading be in the ped's legs once it kneels (or stands) at the filler?
----The legs are capsules from the clip (rig.lua body, ped space), the can a box from the ground up.
+-- The legs are capsules from the clip (rig.lua body, ped space), the can a box from the ground up.
 function Game:canInLegs(pos, heading)
     local place = self.place
     local body = RIG.clips[place.clip] and RIG.clips[place.clip].body
@@ -217,7 +197,7 @@ function Game:canInLegs(pos, heading)
     return false
 end
 
----Can the can stand at pos turned to heading? Returns ok, or false and why.
+-- Returns ok, or false and why.
 function Game:checkSpot(pos, heading)
     local props, place = self.props, self.place
     local rot = Mat.axis('z', heading)
@@ -240,7 +220,6 @@ function Game:checkSpot(pos, heading)
     if probe(pos + vec3(0.0, 0.0, CAN.size.z + 0.2), pos + vec3(0.0, 0.0, 0.06), 1 | 2 | 16, ped) then
         return false, 'spot_blocked'
     end
-    -- The hose's way from the filler to the can's neck.
     local mouth = props:mouth() + props:fillerDir(vec3(0.0, -0.06, 0.0))
     if probe(mouth, pos + Mat.apply(rot, CAN.neckPath[1]) + vec3(0.0, 0.0, 0.05), 1 | 16, ped) then
         return false, 'spot_blocked'
@@ -299,8 +278,6 @@ steps.place = {
     end,
 }
 
--- Carry and put the can down ---------------------------------------------------------------------
-
 steps.carry = {
     enter = function(self)
         self.stand, self.pedHeading = self:standSpot(self.canPos, self.canHeading)
@@ -337,8 +314,6 @@ steps.putdown = {
     end,
 }
 
--- Open the can -------------------------------------------------------------------------------------
-
 steps.cancap = {
     enter = function(self)
         self.screwing = { screw = Siphon.Screw.new(CAN.cap.turns, 'off') }
@@ -363,16 +338,11 @@ steps.cancap = {
     end,
 }
 
--- The funnel into the can's neck: picked up off the ground, carried over the neck (the spout
--- straightening as it lines up) and let go, it slides down into it.
-
----Where the middle of the funnel's bowl is once it is lined up over the neck, ready to drop in (world).
 function Game:funnelOver()
     return self.props:can(FUNNEL.seat + vec3(0.0, 0.0, SiphonProps.SPOUT + SEAT_HIGH) + FUNNEL.hold)
 end
 
----Keeps the funnel held by the middle of its bowl at p clear of the ground and of the can (its bent
----spout hangs below the bowl).
+-- Its bent spout hangs below the bowl.
 function Game:funnelClear(p)
     local props = self.props
     p = self:keepOut(p, 0.2)
@@ -394,7 +364,6 @@ steps.funnel = {
         local funnel = props.funnel
 
         if self.part == 'drop' then
-            -- Straight up over the neck, then down into it.
             local k = Clamp((self:since(self.partAt) - 0.2) / DROP_TIME, 0.0, 1.0)
             funnel.lift = (SiphonProps.SPOUT + SEAT_HIGH) * (1.0 - k * k * (3.0 - 2.0 * k))
             if k >= 1.0 then
@@ -408,7 +377,6 @@ steps.funnel = {
         end
 
         if self.holding and not self.down then
-            -- Let go away from the neck: it goes back down where it lay.
             self.holding = nil
             props:layFunnel(0.35)
             sound('sf_funnel_down', 0.6)
@@ -431,7 +399,6 @@ steps.funnel = {
         local over = self:funnelOver()
         local at = self:funnelClear(self:cursorAt(over))
         props:holdFunnel(at)
-        -- Lining up over the neck, the spout bends straight to go in.
         local off = vec3(at.x - over.x, at.y - over.y, 0.0)
         funnel.bend = FUNNEL.spout.rest * Clamp((#off - 0.04) / STRAIGHTEN, 0.0, 1.0)
         self:mark('target', over, { progress = 1.0 })
@@ -443,8 +410,6 @@ steps.funnel = {
         hint(self, 'hint_funnel', { { key = 'LMB', label = t('key_drag') } })
     end,
 }
-
--- To the filler and open it ------------------------------------------------------------------------
 
 steps.walk = {
     enter = function(self)
@@ -494,8 +459,6 @@ steps.fillercap = {
     end,
 }
 
--- The siphon hose: into the filler, down into the fuel, the other end into the can ----------------------
-
 steps.hose = {
     enter = function(self)
         local props = self.props
@@ -518,7 +481,6 @@ steps.feed = {
         local props = self.props
         local bottom = props.siphonDepth - 0.02
         local fuelAt = Lerp(0.62, 0.30, Clamp(self.session.tank / 100, 0.0, 1.0))
-        -- Pushed in like the can end: the flap and the neck's bends only bump it on the way down.
         self.feed = Siphon.Feed.new({ fuelAt = math.min(fuelAt, bottom - 0.08), bottom = bottom })
         self.feedGoal = math.min(self.feed.fuelAt + FEED_PAST, bottom)
         self:fillerShot(true)
@@ -536,7 +498,6 @@ steps.feed = {
             end
             if e == 'bottom' then sound('sf_bump', 0.6) end
         end
-        -- The flap gives as the tip goes by it, and a bend in the neck now and then.
         if was < FILLER.flapAt and feed.depth >= FILLER.flapAt then sound('sf_flap') end
         for _, at in ipairs(BENDS) do
             if was < at and feed.depth >= at then sound('sf_bump', 0.4) end
@@ -562,7 +523,7 @@ steps.feed = {
 steps.canhose = {
     enter = function(self)
         local rope = self.props.siphon
-        rope:feed(1, self.props.siphonIn, self.feed.depth) -- the hand lets go of the hose outside the filler
+        rope:feed(1, self.props.siphonIn, self.feed.depth)
         self:frame(self.props:canTarget(), rope.p[rope.count], true, 50.0, 0.6)
     end,
     update = function(self, dt)
@@ -572,7 +533,6 @@ steps.canhose = {
             if self:sendEnd(dt, rope, 2, props:canTarget(), DOWN, t('label_hose')) then
                 props:intoCan(0.0)
                 self.canDepth, self.part = 0.0, 'push'
-                -- Deep enough that the flow can't flick it out, as far as the hose reaches.
                 self.canGoal = math.min(Game.GOOD_DEPTH + CAN_PAST, self:canReach())
                 sound('sf_hose_in')
                 self:canShot()
@@ -594,8 +554,6 @@ steps.canhose = {
     end,
 }
 
--- The blow hose: in, the setup is done ----------------------------------------------------------------
-
 steps.blowhose = {
     enter = function(self)
         self:frame(self.props:mouth(), self.props.blow.p[1], true, 50.0, 0.4)
@@ -615,7 +573,7 @@ steps.blowhose = {
         if self.blowDepth < BLOW_DEPTH then
             self.loops.feed = { 'sf_feed', { level = 0.4 } }
         elseif not self.asking and self.now >= (self.askAt or 0) then
-            -- All set: the server starts the priming (it refuses a setup done faster than anyone could).
+            -- The server refuses a setup done faster than anyone could.
             self.asking = true
             self:request('tr_minigames:siphon:ready', {}, function(result)
                 self.asking = false
@@ -631,8 +589,6 @@ steps.blowhose = {
         hint(self, 'hint_blowhose')
     end,
 }
-
--- Pack-up ------------------------------------------------------------------------------------------------
 
 steps.unpack = {
     packing = true,
@@ -664,7 +620,6 @@ steps.unpack = {
             props.blow:feed(1, nil)
         end
 
-        -- What is left in the hose runs on into the can; the flap springs shut behind it.
         props.fuel.from = math.min(props.fuel.to, props.fuel.from + dt * 1.4)
         if fed < FILLER.flapAt + 0.01 and props.flap > 1.0 then
             if props.flap > 30.0 and not self.flapShut then
@@ -729,7 +684,6 @@ steps.walkcan = {
         if not self.frameAt then
             if self.arrived() then self.frameAt = PUTDOWN.length end
         else
-            -- Crouch down by the can.
             self.frameAt = math.max(HOLD_FRAME, self.frameAt - dt * FPS)
             self:scrub('putdown', self.frameAt / PUTDOWN.length, 2)
             if self.frameAt <= HOLD_FRAME then return self:go('canout') end
@@ -778,8 +732,7 @@ steps.canout = {
             return hint(self, 'hint_canout', { { key = 'LMB', label = t('key_take') } })
         end
 
-        -- Held over the can a moment so the last of the fuel drips into it, then laid on the ground off the
-        -- side the hose comes down (not across the top, where the cap goes back on).
+        -- Laid off the side the hose comes down, not across the top where the cap goes back on.
         local seconds = self:since(self.partAt)
         local drips = math.floor(seconds / 0.3)
         if rope.pins[n] and not self.laying and drips > (self.drips or 0) and drips <= 3 then
@@ -824,7 +777,6 @@ steps.funnelout = {
         local funnel = props.funnel
         if not self.part and funnel.where ~= 'can' then return self:go('cancapon') end -- it never went in
 
-        -- Fuel standing in it runs out as it comes up: into the full can, and over its end.
         if funnel.level > 0.0 and funnel.lift > 0.0 then
             funnel.level = math.max(0.0, funnel.level - dt * 0.8)
             local neck = props:neckTop()
@@ -849,7 +801,6 @@ steps.funnelout = {
             return hint(self, 'hint_funnelout', { { key = 'S', label = t('key_pull') } })
         end
 
-        -- Held over the can a moment while the spout drips, then put down by the kit.
         local seconds = self:since(self.partAt)
         local drips = math.floor(seconds / 0.3)
         if drips > (self.drips or 0) and drips <= 2 then
@@ -909,7 +860,7 @@ steps.cancapon = {
 steps.pickup = {
     packing = true,
     enter = function(self)
-        self.props.kitShown = false -- the hoses and the funnel go back in the bag
+        self.props.kitShown = false
         sound('sf_hose_grab', 0.6)
         self.frameAt, self.lifted = HOLD_FRAME, false
         self:frame(self.props:neckTop(), GetEntityCoords(PlayerPedId()), false, 55.0, 0.55)
@@ -924,7 +875,7 @@ steps.pickup = {
         end
         if self.lifted then self:carryCan(self.frameAt) end
         if self.frameAt <= 0.0 then
-            self.props:carry(nil) -- and back in the bag
+            self.props:carry(nil)
             return self:finish('done', 200)
         end
         hint(self, 'hint_pickup')

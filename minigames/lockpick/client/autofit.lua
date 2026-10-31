@@ -1,50 +1,29 @@
---[[
-    Fits the lock to every car by itself (dev mode; saving needs an admin).
-
-        /lockpick_autofit           every car model that has no saved fit yet
-        /lockpick_autofit redo      also redo the ones fitted automatically before (not manual ones)
-        /lockpick_autofit all       the same as redo
-        /lockpick_autofit sultan    just this one
-        /lockpick_autofit sultan show   and show its door map for 8 s (works with the others too)
-
-    Scripts can't see a car's bodywork, only its collision, which can sit centimetres inside the
-    paint, and door handles have no collision at all. So this measures what is drawn: the camera
-    looks straight at the driver's door, small magenta markers are drawn along each line of sight,
-    and the resource's page reads the frame (TR.ui.probeFrame) to see which are hidden behind the door. A binary
-    search per line finds the paint to under a millimetre: a depth map of the door around the
-    handle. doormap.lua finds the door's surface (as it curves around each place), the handle (and
-    its pocket) and the car's own lock if it has one; otherwise the flattest spots close to the
-    handle (ahead of it first). A finer map of each says how the lock would sit there: tilted to
-    rest on the paint's high points, so nothing pokes through it.
-
-    Each fit is saved like a manual one (minigames/lockpick/fits.json). Fits it isn't sure about
-    are marked `check`: go through them with /lockpick_fitall review. Esc stops after the car
-    on screen, Backspace skips it.
-]]
+-- /lockpick_autofit [redo | all | <model>] [show] (dev mode; saving needs an admin)
+-- Door handles have no collision, so this measures what is drawn (engine/client/probe.lua).
 
 local cfg = Config.lockpick
 
 if not cfg.enabled or not cfg.devMode then return end
 
-local DOOR, SIDE = 'dside_f', -1      -- the driver's door; out of it is the car's -X
+local DOOR, SIDE = 'dside_f', -1      -- out of the driver's door is the car's -X
 local OUT = vec3(SIDE * 1.0, 0.0, 0.0)
 local RADIUS = 0.0195                 -- the bezel (13.5 mm) and a margin, clear of the handle
-local ON_PAINT = 0.0015               -- the plug's face this far out from the paint
-local COARSE, FINE = 0.010, 0.006     -- sample spacing of the door map and of the spot's map
-local COARSE_WIDE = 0.015             -- the door map's spacing when it has to cover the whole door
-local OUT_REACH, IN_REACH = 0.20, 0.15 -- the door map searches this far out of / into the door from the handle's bone
-local ROUNDS = Probe.ROUNDS           -- binary search steps: 35 cm down to a third of a millimetre
-local BEZEL = 0.0145                  -- what the lock rests on: the bezel's radius and a millimetre
-local ROUGH, TRIES = 0.004, 3         -- spots worth a closer look: this flat on the door map; how many
-local KNOB_WINDOW, KNOB_STEP = 0.05, 0.005   -- the close look at what may be the car's own lock
+local ON_PAINT = 0.0015               -- metres out from the paint
+local COARSE, FINE = 0.010, 0.006     -- metres between samples
+local COARSE_WIDE = 0.015             -- metres, when the map has to cover the whole door
+local OUT_REACH, IN_REACH = 0.20, 0.15 -- metres out of / into the door from the handle's bone
+local ROUNDS = Probe.ROUNDS
+local BEZEL = 0.0145                  -- the bezel's radius and a millimetre
+local ROUGH, TRIES = 0.004, 3         -- spots this flat get a closer look; how many
+local KNOB_WINDOW, KNOB_STEP = 0.05, 0.005   -- metres, around what may be the car's own lock
 local SNUG, UNEVEN = 0.001, 0.006     -- mean gap under the bezel that's good; largest gap at all
 
 local running = false
-local show = false                    -- /lockpick_autofit <model> show: see the door map
-local wide = false                    -- C: the fitted lock shown against the whole door instead of up close
-local preview                         -- while a fit is shown: aims the camera at it (again after C)
-local WIDE, CLOSE = 4.0, 1.6          -- the preview camera this many times the picking camera's distance
-local status                          -- the run's progress on the HUD: { model, index, total, started, phase }
+local show = false
+local wide = false
+local preview
+local WIDE, CLOSE = 4.0, 1.6          -- times the picking camera's distance
+local status
 
 local function say(text)
     print('[lockpick autofit] ' .. text)
@@ -56,8 +35,7 @@ local function minutes(ms)
     return ('%d min %02d s'):format(s // 60, s % 60)
 end
 
----The run's progress, bottom middle: which car, how many are left and what it is doing. Kept
----below the door map, out of the way of the markers (the frame probe doesn't see the UI anyway).
+-- Kept below the door map, out of the way of the markers.
 local function progress(phase)
     if not status then return end
     status.phase = phase or status.phase
@@ -83,8 +61,6 @@ local function progress(phase)
     })
 end
 
--- Drawing -------------------------------------------------------------------------------------
-
 local function drawThread()
     CreateThread(function()
         while running do
@@ -104,19 +80,13 @@ local function drawThread()
     end)
 end
 
--- Measuring (engine/client/probe.lua) in door space: h out of the driver's door.
-
 local measure, prepare, aim, calibrate = Probe.measure, Probe.prepare, Probe.aim, Probe.calibrate
 
 local function toDoor(vehicle, samples, reference)
     Probe.toSurface(vehicle, samples, reference, SIDE)
 end
 
--- Showing the door map ----------------------------------------------------------------------
-
----For tuning: the door map for 8 s. Green is plain skin, red something else (the handle, trim, a
----seam), yellow the handle's box, blue the spots it will look at closer (the biggest is first),
----white what may be the car's own lock.
+-- Green plain skin, red something else, yellow the handle's box, blue spots to look at closer, white maybe the car's own lock.
 local function showMap(vehicle, map, reference, box, candidates, knobs)
     local list = {}
     local function at(u, v, h) return GetOffsetFromEntityInWorldCoords(vehicle, reference.x + SIDE * h, u, v) end
@@ -141,28 +111,22 @@ local function showMap(vehicle, map, reference, box, candidates, knobs)
     Probe.drawList = nil
 end
 
--- One car -------------------------------------------------------------------------------------
-
----Where collision says the door is at (u, v): a first guess of the paint, for cars without a handle bone.
 local function collisionX(vehicle, u, v) return Probe.collisionX(vehicle, u, v, SIDE) end
 
 local place
 
----Fits one car. Returns the fit and notes, or nil and why.
 local function fitCar(vehicle)
     local handle = Scene.boneOffset(vehicle, 'handle_' .. DOOR)
     local hinge = Scene.boneOffset(vehicle, 'door_' .. DOOR)
     if not handle and not hinge then return nil, 'no driver door' end
 
-    -- The area to map, and a reference plane (x = constant) near the paint. The handle's bone can
-    -- sit anywhere from the grip to deep in the door, so the search reaches well out and in.
+    -- The handle's bone can sit anywhere from the grip to deep in the door, so the search reaches well out and in.
     local region, reference, distance, step
     if handle then
         -- Further down than up: older cars have their own lock under the handle.
         region = { u0 = handle.y - 0.30, u1 = handle.y + 0.30, v0 = handle.z - 0.22, v1 = handle.z + 0.09 }
         reference, distance, step = handle, 0.9, COARSE
     else
-        -- No handle bone: map most of the door and find the handle in it.
         region = { u0 = hinge.y - 1.15, u1 = hinge.y - 0.08, v0 = hinge.z - 0.32, v1 = hinge.z + 0.10 }
         local cu, cv = (region.u0 + region.u1) * 0.5, (region.v0 + region.v1) * 0.5
         local x = collisionX(vehicle, cu, cv)
@@ -179,7 +143,6 @@ local function fitCar(vehicle)
     local skinX = collisionX(vehicle, center.y, center.z) or center.x
     calibrate(GetOffsetFromEntityInWorldCoords(vehicle, skinX + SIDE * 0.08, center.y, center.z))
 
-    -- The door map.
     progress('Mapping the door')
     local map = DoorMap.grid(region.u0, region.u1, region.v0, region.v1, step)
     local samples = prepare(vehicle, map.samples, reference, function() return -OUT_REACH end, function() return IN_REACH end)
@@ -193,12 +156,10 @@ local function fitCar(vehicle)
     say(('  door map: paint at %d of %d points (%d mm apart), %d in front of it all'):format(
         found, #map.samples, math.floor(step * 1000 + 0.5), blocked))
     if found < #map.samples * 0.2 then
-        -- Almost nothing measured: the markers can't be told apart in the frame, or the door isn't there.
         return nil, ('found the door at only %d of %d points'):format(found, #map.samples)
     end
 
-    -- The door's surface as it curves around each place (one smooth curve can't follow a round
-    -- old door), then what stands out of it or sits in it.
+    -- One smooth curve can't follow a round old door, so the surface is fitted around each place.
     progress('Finding the handle')
     local global = DoorMap.fitSkin(map)
     if not global then return nil, 'no door surface' end
@@ -211,8 +172,7 @@ local function fitCar(vehicle)
     say(('  handle %s: %d x %d mm'):format(box.found and 'found' or 'not seen, guessed at its bone',
         math.floor((box.u1 - box.u0) * 1000), math.floor((box.v1 - box.v0) * 1000)))
 
-    -- The best few spots on the door map get a finer map of their own, and the lock is seated on
-    -- each: tilted to rest on the paint's high points, so nothing pokes through it.
+    -- The lock is tilted to rest on the paint's high points, so nothing pokes through it.
     local candidates = DoorMap.pick(map, DoorMap.spots(box, RADIUS), RADIUS, ROUGH, TRIES)
     local knobs, passed = DoorMap.lockCandidates(map, box)
     for _, c in ipairs(passed) do
@@ -221,8 +181,6 @@ local function fitCar(vehicle)
     say(('  %d small thing(s) standing out near the handle that may be the car\'s own lock'):format(#knobs))
     if show then showMap(vehicle, map, reference, box, candidates, knobs) end
 
-    -- Finer maps: every place worth a closer look is measured in one go (as fast as just one),
-    -- then gone through in order.
     local function closer(places, window, step, shape, lo, hi, rounds)
         local fines, all = {}, {}
         for k, c in ipairs(places) do
@@ -287,7 +245,6 @@ local function fitCar(vehicle)
     return place(vehicle, reference, best, handle, box, false)
 end
 
----The fit for a lock seated as `best` says (DoorMap.seat, with best.spot), and notes on it.
 function place(vehicle, reference, best, handle, box, onOwnLock)
     local spot = best.spot
     local outward = Vec.normalize(vec3(SIDE * 1.0, -best.b, -best.c))
@@ -313,8 +270,6 @@ function place(vehicle, reference, best, handle, box, onOwnLock)
         check = #notes > 0 or nil,
     }, table.concat(notes, ', ')
 end
-
--- The run -------------------------------------------------------------------------------------
 
 local function run(arg)
     local Dev = Lockpick.dev
@@ -349,7 +304,6 @@ local function run(arg)
             status = { model = wanted, index = index, total = #list, started = started, phase = 'Loading the car' }
             progress()
             vehicle = Dev.spawn(wanted, home, heading)
-            -- The next car's model loads while this one is measured.
             local nextModel = list[index + 1] and joaat(list[index + 1])
             if nextModel and IsModelInCdimage(nextModel) then RequestModel(nextModel) end
 
@@ -367,7 +321,7 @@ local function run(arg)
                 say(('%s (%d / %d)'):format(model, index, #list))
                 local done, fit, note = pcall(fitCar, vehicle)
                 if not done then
-                    if fit ~= 'skipped' then error(fit, 0) end -- stopped, or the frame can't be read
+                    if fit ~= 'skipped' then error(fit, 0) end
                     fit, note = nil, 'skipped'
                 end
                 local own = Lockpick.savedFits[model]
@@ -383,7 +337,6 @@ local function run(arg)
                         if fit.check then checks = checks + 1 end
                         say(('%s fitted%s'):format(model, note ~= '' and (' (check: ' .. note .. ')') or ''))
 
-                        -- Show the result for a moment.
                         if not scene then
                             scene = Scene.new(vehicle, vec3(fit.x, fit.y, fit.z), fit.pitch, fit.yaw)
                             Dev.spawnTool(scene)
@@ -446,7 +399,6 @@ RegisterCommand('lockpick_autofit', function(_, args)
         return say('needs the latest tr_core: ensure tr_core, then tr_minigames')
     end
 
-    -- `show` can go anywhere; the other word picks the cars.
     local what
     show = false
     for _, word in ipairs(args) do

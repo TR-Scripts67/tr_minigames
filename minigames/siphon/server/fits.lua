@@ -1,11 +1,5 @@
--- Where the filler sits on each car model, made in game with /filler_autofit (client/autofit.lua) or
--- /filler_fitall (client/fitter.lua) and kept in minigames/siphon/fits.json. Every client gets them
--- on join and when one is saved. Siphon.fit picks a saved fit over Config.siphon.vehicleFits.
---
---   { x, y, z, pitch, yaw, auto?, check?, both?, sig?, from? }
---       filler space on the car (vehicle space, as Scene.new takes it); `auto`: measured, `check`: the
---       measuring wasn't sure, `both`: mirrored to either flank, `sig`: the model's body (its size to
---       the mm), `from`: copied from that model, which has the same body (kept in step with it)
+-- Saved fits win over Config.siphon.vehicleFits.
+-- { x, y, z, pitch, yaw, auto?, check?, both?, sig?, from? }: sig is the body's size to the mm, from the model it's copied from.
 
 local cfg = Config.siphon
 
@@ -21,7 +15,6 @@ local function num(v, limit)
     if v and v == v and math.abs(v) <= limit then return v end
 end
 
----A clean copy of a fit, or nil if it isn't one.
 local function clean(fit)
     if type(fit) ~= 'table' then return end
     local x, y, z = num(fit.x, 10), num(fit.y, 10), num(fit.z, 10)
@@ -51,7 +44,7 @@ local function encode(f)
     return ('{ "x": %.4f, "y": %.4f, "z": %.4f, "pitch": %.2f, "yaw": %.2f%s }'):format(f.x, f.y, f.z, f.pitch, f.yaw, flags)
 end
 
----One model per line, sorted, so the file reads (and diffs) well.
+-- One model per line, sorted, so the file reads and diffs well.
 local function save()
     local models = {}
     for model in pairs(fits) do models[#models + 1] = model end

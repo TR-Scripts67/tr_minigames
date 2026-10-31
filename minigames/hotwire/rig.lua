@@ -30,4 +30,23 @@ Hotwire.rig = {
     segmentLength = 0.017,
     screwFace = -0.0026, -- the screw head's face, below its origin
     driveDepth = 0.0022, -- how far the screwdriver's point sits up in the recess
+    bike = { -- switch space: the bar along X (its throttle end +X), +Z up, the rider at -Y, origin on the bar's axis
+        hung = vec3(0.0000, -0.0130, -0.0726), hungPitch = -48.9, -- the lower half off a level bar: moved, then turned round X
+        wires = { -- top: where it leaves tr_hw_bike_switch, going down; exit: where it leaves the lower half, going up
+            { color = 'red', top = vec3(-0.0080, -0.0292, 0.0000), exit = vec3(-0.0080, -0.0292, 0.0040) },
+            { color = 'black', top = vec3(0.0000, -0.0292, 0.0000), exit = vec3(0.0000, -0.0292, 0.0040) },
+            { color = 'brown', top = vec3(0.0080, -0.0292, 0.0000), exit = vec3(0.0080, -0.0292, 0.0040) },
+        },
+        loom = { top = vec3(-0.0190, -0.0280, 0.0000), exit = vec3(-0.0190, -0.0280, 0.0040) }, -- never cut: tr_hw_bike_loom_seg links
+        wireBow = vec3(0.2500, -1.0000, 0.0000), -- which way the middle wire bows out; the others spread by x
+        wireLength = 0.05,
+        wireRadius = 0.0011,
+        segmentLength = 0.0045,
+        sleeveLength = 0.01,
+        copperLength = 0.009,
+        start = vec3(0.0085, -0.0400, -0.0088), -- tr_hw_bike_start in tr_hw_bike_switch_lower
+        startTravel = 0.0022, -- pressed along +Y
+        centre = vec3(-0.0001, -0.0044, -0.0176), -- the lower half's centre of mass, with its button
+        bounds = { vec3(-0.0339, -0.0401, -0.0344), vec3(0.0339, 0.0344, 0.0041) }, -- its box
+    },
 }

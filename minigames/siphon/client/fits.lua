@@ -1,12 +1,3 @@
---[[
-    The filler fits every car model has (placement.lua uses them): from the server on join, and
-    every time someone saves one with /filler_fitall or /filler_autofit (dev mode).
-
-        local moved = Siphon.nudged(model, vehicle)   -- the fit moved by the key just pressed, or nil
-
-    A fit is where filler space sits on the car: { x, y, z, pitch, yaw } in vehicle space.
-]]
-
 local cfg = Config.siphon
 
 if not cfg.enabled then return end
@@ -27,9 +18,8 @@ RegisterNetEvent('tr_minigames:siphon:fitSaved', function(model, fit)
     Siphon.savedFits[model] = fit
 end)
 
--- Dev keys that move the filler while fitting it: 5 mm a press, 1 mm with Shift held. Held down, a key
--- keeps moving it after HOLD seconds (SPEED a second, a fifth of that with Shift). In filler space:
--- +X to the right of a player facing the car, +Y into it, +Z up.
+-- 5 mm a press, 1 mm with Shift held; held down, a key keeps moving after HOLD seconds.
+-- In filler space: +X to the right of a player facing the car, +Y into it, +Z up.
 local NUDGE = {
     { 174, vec3(-1.0, 0.0, 0.0) }, { 175, vec3(1.0, 0.0, 0.0) }, -- arrow left / right: along the car
     { 34, vec3(-1.0, 0.0, 0.0) }, { 35, vec3(1.0, 0.0, 0.0) },   -- A / D
@@ -38,7 +28,7 @@ local NUDGE = {
     { 44, vec3(0.0, -1.0, 0.0) }, { 38, vec3(0.0, 1.0, 0.0) },   -- Q / E: out of / into the car
 }
 
--- And turn it to sit flat on the paint: 1 degree a press, a quarter with Shift held.
+-- 1 degree a press, a quarter with Shift held
 local TURN = {
     { 241, 'pitch', 1, true }, { 242, 'pitch', -1, true }, -- scroll up / down: tip the face up / down (no holding)
     { 111, 'pitch', 1 }, { 112, 'pitch', -1 },             -- numpad 8 / 5
@@ -48,10 +38,9 @@ local TURN = {
 
 local HOLD = 0.3
 local SPEED = { move = 0.08, turn = 12.0 } -- metres, degrees a second
-local heldFor = {}                         -- control -> seconds held down
+local heldFor = {}                         -- seconds
 
----How far control `n` moves things this frame, in presses: 1 the frame it is pressed, then nothing
----until it has been held HOLD seconds, then `rate` presses a second.
+-- 1 the frame it's pressed, then nothing until it has been held HOLD seconds, then `rate` a second
 local function presses(n, rate, tapOnly)
     if IsDisabledControlJustPressed(0, n) then
         heldFor[n] = 0.0
@@ -72,8 +61,7 @@ local function copy(fit)
     return { x = fit.x, y = fit.y, z = fit.z, pitch = fit.pitch, yaw = fit.yaw, both = fit.both }
 end
 
----The fit moved by the dev key just pressed (read with controls disabled), or nil. Without a fit of
----its own the car's guess (petroltank bone or the flank above a wheel) is where it starts from.
+-- Read with controls disabled. Without a fit of its own the car's guess is where it starts.
 ---@param side? number the side the guess is on when the car has no petroltank bone
 function Siphon.nudged(model, vehicle, side)
     local fine = IsDisabledControlPressed(0, 21)
@@ -110,8 +98,7 @@ function Siphon.nudged(model, vehicle, side)
     return fit
 end
 
----The fit on the car's other flank: mirrored across the car's middle (for cars whose guess picked
----the wrong side).
+-- For cars whose guess picked the wrong side.
 function Siphon.mirrorFit(fit)
     return { x = -fit.x, y = fit.y, z = fit.z, pitch = fit.pitch, yaw = -fit.yaw, both = fit.both }
 end

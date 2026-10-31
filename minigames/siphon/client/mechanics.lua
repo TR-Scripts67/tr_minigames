@@ -1,28 +1,19 @@
---[[
-    The hands-on parts of the setup as plain state machines, without natives (so they are tested):
-
-        Siphon.Screw   a cap turned off or on by circling the cursor round it
-        Siphon.Feed    a hose pushed down a channel into the fuel
-
-    Each takes the player's input and returns a list of events for the game to show and play.
-]]
+-- No natives here, so the tests can run it.
 
 Siphon = Siphon or {}
 
 local TAU = math.pi * 2
 
--- Caps -----------------------------------------------------------------------------------------------
-
 local Screw = {}
 Screw.__index = Screw
 Siphon.Screw = Screw
 
-local TICK = math.rad(30)     -- a thread tick every 30 degrees
-local RATCHET = math.rad(40)  -- a fuel cap's ratchet clicks every 40 degrees past tight
+local TICK = math.rad(30)
+local RATCHET = math.rad(40)  -- a fuel cap's ratchet, past tight
 
 ---@param turns number full turns between seated and free
----@param way 'off' | 'on' off: counter-clockwise until free; on: clockwise until seated
----@param ratchet? boolean a fuel cap: it clicks when turned past tight
+---@param way 'off' | 'on'
+---@param ratchet? boolean
 ---@param clicks? integer screwing on a ratchet cap: clicks needed to finish
 function Screw.new(turns, way, ratchet, clicks)
     return setmetatable({
@@ -30,20 +21,20 @@ function Screw.new(turns, way, ratchet, clicks)
         way = way,
         ratchet = ratchet,
         clicks = clicks or 0,
-        angle = 0.0,     -- radians turned the way it goes
+        angle = 0.0,     -- radians
         ticks = 0,
         clicked = 0,
-        tight = 0.0,     -- radians turned past tight, towards the next ratchet click
+        tight = 0.0,     -- radians past tight
         done = false,
     }, Screw)
 end
 
----0..1 of the way: off from seated to free, on from loose to seated.
+-- 0..1
 function Screw:progress()
     return math.min(1.0, self.angle / (self.turns * TAU))
 end
 
----How far the cap is turned from seated, in radians counter-clockwise (for drawing it).
+-- radians counter-clockwise from seated
 function Screw:rotation()
     if self.way == 'off' then return self.angle end
     return (self.turns * TAU - self.angle)
@@ -57,8 +48,7 @@ local function tickEvents(self, events)
     end
 end
 
----The cursor went round the cap by `delta` radians, counter-clockwise positive as the player sees it.
----Events: 'tick' (thread), 'ratchet' (click past tight), 'free' (came off), 'seated' (on and done).
+-- delta: counter-clockwise positive as the player sees it. Events: 'tick', 'ratchet', 'free', 'seated'.
 ---@param delta number
 ---@return string[] events
 function Screw:turn(delta)
@@ -67,7 +57,6 @@ function Screw:turn(delta)
     local forward = self.way == 'off' and delta or -delta
     local full = self.turns * TAU
 
-    -- Turned tighter than tight: seated and turned the screwing-on way.
     local seated = (self.way == 'off' and self.angle <= 0.0) or (self.way == 'on' and self.angle >= full)
     local tighter = (self.way == 'off' and forward < 0) or (self.way == 'on' and forward > 0)
     if seated and tighter then
@@ -107,7 +96,6 @@ function Screw:turn(delta)
     return events
 end
 
----Angle change from one cursor angle to the next, the short way round.
 function Screw.delta(from, to)
     local d = to - from
     while d > math.pi do d = d - TAU end
@@ -115,14 +103,12 @@ function Screw.delta(from, to)
     return d
 end
 
--- Hoses ----------------------------------------------------------------------------------------------
-
 local Feed = {}
 Feed.__index = Feed
 Siphon.Feed = Feed
 
 ---@param opts { fuelAt?: number, bottom: number }
----fuelAt: where the tip reaches the fuel. bottom: as far as it goes.
+-- fuelAt: where the tip reaches the fuel. bottom: as far as it goes.
 function Feed.new(opts)
     return setmetatable({
         fuelAt = opts.fuelAt or math.huge,
@@ -133,8 +119,7 @@ function Feed.new(opts)
     }, Feed)
 end
 
----Pushes the hose in by ds metres (pulls it out when negative).
----Events: 'fuel' (the tip reached it), 'bottom'.
+-- ds: metres, negative pulls it out. Events: 'fuel', 'bottom'.
 ---@return string[] events
 function Feed:push(ds)
     local events = {}

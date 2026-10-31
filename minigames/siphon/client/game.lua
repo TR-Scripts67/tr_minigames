@@ -1,21 +1,3 @@
---[[
-    The siphon minigame.
-
-        local result, litres, can, spilled = Siphon.run(vehicle, session)
-
-    The setup, hands on (steps.lua): put the jerry can down, open it and put the funnel in its neck, open
-    the car's fuel cap, drag the siphon hose to the filler and push it down the neck past the flap into
-    the fuel, put the other end deep into the can through the funnel, add the blow hose. Then the blow
-    method (this file): puffs push the fuel up and over until it runs by itself, the can fills (a full
-    can backs up into the funnel, then runs over), E pulls the hose. Then everything is packed up again
-    (steps.lua).
-
-    The server decides how many puffs it takes, checks the setup took long enough and counts the litres
-    from its own clock; this file shows it. Fuel that misses the can spills on the ground (and burns).
-
-    result: 'done' (litres, can percent, spilled), 'gave_up', 'cancelled' or a reason.
-]]
-
 local cfg = Config.siphon
 local RIG = Siphon.rig
 local function t(key, vars) return TR.locale.t('siphon.' .. key, vars) end
@@ -27,19 +9,18 @@ Siphon.Game = Game -- for tests and steps.lua
 local DICT = 'tr_sf_anims'
 local FPS = 30
 local PUFFS_IN_CLIP = 3          -- the blow clip loops three puffs of rising effort
--- Breath, in a puff's own time (0..1, see props/siphon/anim.py breath()): in until READY, blowing
--- from READY to BLOWN, the blow eases off by 1.
+-- Breath, in a puff's own time (0..1, props/siphon/anim.py breath()): in until READY, blowing until BLOWN.
 local READY, BLOWN = 0.36, 0.62
-local INHALE_TIME = 0.9          -- seconds to breathe in
-local EXHALE_TIME = 0.7          -- seconds for the blow to ease off after letting go
-local BLOW_IN_TIME = 0.45        -- seconds for the cheeks to fill as the blow starts
+local INHALE_TIME = 0.9          -- seconds
+local EXHALE_TIME = 0.7          -- seconds
+local BLOW_IN_TIME = 0.45        -- seconds
 
--- The pressure meter while blowing: rises faster as it climbs, and each puff a little faster.
+-- Rises faster as it climbs, and each puff a little faster.
 local PRESSURE_RATE = 0.42
 local PRESSURE_GROWTH = 0.08     -- per good puff
 local ZONE_WIDTH = { 0.2, 0.13 } -- the green zone: first puff, last puff
-local FUEL_SPEED = 0.8           -- metres a second the fuel runs down the hose once it flows
-local DECAL_EVERY = 400          -- ms between petrol decals while fuel spills
+local FUEL_SPEED = 0.8           -- metres a second
+local DECAL_EVERY = 400          -- ms
 
 Game.DICT, Game.FPS = DICT, FPS
 
@@ -49,7 +30,7 @@ local KEY = {
 }
 Game.KEY = KEY
 
-local LOOPS = { 'blow', 'gurgle', 'pour', 'spill', 'feed' } -- their ids are 'siphon:<loop>'
+local LOOPS = { 'blow', 'gurgle', 'pour', 'spill', 'feed' } -- ids are 'siphon:<loop>'
 
 local LIPS = { 61839, 20623 }   -- FB_UpperLip_045, FB_LowerLip_045
 local RIGHT_HAND = 28422        -- PH_R_Hand
@@ -57,17 +38,14 @@ local LEFT_HAND = 60309         -- PH_L_Hand
 -- Bones that would fill a close-up if the camera is right by them.
 local BODY = { 31086, 39317, 24818, 24817, 11816, 40269, 45509, 28252, 61163, 57005, 18905, 36864, 63931 }
 
----@param name string sound on the resource's page (engine/client/sounds.lua)
+---@param name string
 ---@param volume? number 0..1 of the usual
 function Game.sound(name, volume)
     TR.ui.sound.play(name, Config.volume * (volume or 1.0))
-    -- Players nearby hear it too (TR.mirror).
     local game = Siphon.current
     if game and game.mirror then game.mirror:sound(name) end
 end
 local sound = Game.sound
-
--- Setup -----------------------------------------------------------------------------------------
 
 function Game.new(vehicle, session, place)
     local work = place.clip:gsub('blow', 'work')
@@ -85,7 +63,7 @@ function Game.new(vehicle, session, place)
         cursor = 1,
 
         strikes = 0,
-        progress = 0,     -- good puffs counted so far
+        progress = 0,
 
         stage = 'inhale', -- while priming: inhale, ready, blowing, exhale; settle and rest once it runs
         puffIndex = 0,
@@ -94,8 +72,8 @@ function Game.new(vehicle, session, place)
         zone = { 0.6, 0.8 },
         rate = PRESSURE_RATE,
 
-        spilled = 0.0,    -- litres that missed the can (the hose jumped out of it)
-        spills = {},      -- where, for the server: { { at, share } }
+        spilled = 0.0,    -- litres that missed the can
+        spills = {},      -- { { at, share } }
         canLitres = session.can / 100 * session.canLitres,
     }, Game)
 end
@@ -111,7 +89,6 @@ function Game:setup()
     ClearPedTasks(ped)
 
     self.props = SiphonProps.new(self.vehicle, self.place)
-    -- Players nearby see it (TR.mirror; the server started the mirror with the session).
     self.mirror = Mirror.sender(self.props.scene, 'siphon')
     self.mirror.collect = function(sender) self:mirrorState(sender) end
     local pos, target, fov = self:shotPlace()
@@ -130,7 +107,6 @@ function Game:cleanup()
     RemoveAnimDict(DICT)
 end
 
--- Server requests -----------------------------------------------------------------------------
 -- Sent one at a time, in order, without blocking the frame loop.
 
 ---@param fail? function called when it wasn't delivered (timeout, rate limit)
@@ -146,7 +122,6 @@ function Game:request(name, args, cb, fail)
             if not self.running or self.ending then break end
 
             if result[1] == false then
-                -- The server ended the attempt (expired, moved away, ...).
                 self:finish(result[2] or 'no_session')
                 break
             elseif result[1] == nil then
@@ -159,8 +134,6 @@ function Game:request(name, args, cb, fail)
         self.pending = false
     end)
 end
-
--- Endings -------------------------------------------------------------------------------------
 
 function Game:finish(result, delay)
     if self.ending then return end
@@ -179,14 +152,13 @@ function Game:flash(key, tone, ms, vars)
     TR.ui.hud.flash(t(key, vars), tone, math.floor(ms or 1600))
 end
 
--- Steps -----------------------------------------------------------------------------------------
--- steps.lua fills Game.steps[name] = { enter = fn(game), update = fn(game, dt) }.
+-- Game.steps[name] = { enter = fn(game), update = fn(game, dt) }, filled by steps.lua
 
 Game.steps = {}
 Game.ORDER = {}
 
 function Game:go(name)
-    -- A hose end on its way somewhere is let go of (the next step may not want it there).
+    -- The next step may not want a hose end that's on its way somewhere.
     local s = self.sending
     if s then s.rope.pins[s.i], s.rope.pins[s.j] = nil, nil end
     self.step, self.stepAt, self.holding, self.sending, self.pulling = name, self.now, nil, nil, nil
@@ -202,13 +174,9 @@ function Game:nextStep()
     end
 end
 
----Seconds since the current step (or part of it) began.
 function Game:since(at) return (self.now - (at or self.stepAt)) / 1000 end
 
--- Camera --------------------------------------------------------------------------------------
--- Shots are in filler space. Close-ups hide the player's ped when it would fill the frame.
-
----@param closeUp? boolean hide the player's ped when it is in the way
+---@param closeUp? boolean
 function Game:shot(pos, target, fov, closeUp, speed)
     local scene = self.props.scene
     scene:moveCamera(pos, target)
@@ -217,8 +185,7 @@ function Game:shot(pos, target, fov, closeUp, speed)
     self.closeUp, self.focus = closeUp or false, nil
 end
 
----A shot of world points a and b together, from outside the car and a little above. lateral: how far
----round to their side it looks from (more keeps the player at the filler out of the way).
+-- lateral: how far round to their side it looks from (more keeps the player at the filler out of the way).
 function Game:frame(a, b, closeUp, fov, height, lateral)
     local props = self.props
     local pa, pb = props:toFiller(a), props:toFiller(b or a)
@@ -231,26 +198,22 @@ function Game:frame(a, b, closeUp, fov, height, lateral)
     self.focus = { a, b or a }
 end
 
----Looking down at the can's neck (or the funnel in it) from outside the car.
 function Game:canShot(fov)
     local neck = self.props:toFiller(self.props:canTarget())
     self:shot(neck + vec3(0.0, -0.26, 0.36), neck + vec3(0.0, 0.0, -0.04), fov or 45.0, true)
 end
 
----Close on the filler from outside.
 function Game:fillerShot(wide)
     local k = wide and 1.5 or 1.0
     self:shot(vec3(-0.09 * k, -0.34 * k, 0.07 * k), vec3(0.0, 0.0, -0.015 * k), 42.0, true)
 end
 
----Over the player's shoulder, looking down at the ground beside the car.
 function Game:shotPlace()
     local height = self.place.paint.z - self.place.ground
     return vec3(0.35, -2.9, 1.95 - height), vec3(0.0, -0.75, -height), 55.0
 end
 
----In a close-up the ped is hidden when it is between the camera and what the shot is of (as the
----hotwire hides the driver's legs): the cursor is the player's hands.
+-- The cursor is the player's hands, so the ped is hidden when it's between the camera and the shot.
 function Game:hidePed()
     local scene = self.props.scene
     if not self.closeUp or not scene.camPos then return end
@@ -269,14 +232,12 @@ function Game:hidePed()
     end
 end
 
--- Picking ---------------------------------------------------------------------------------------
-
----Where a world point is on screen (0..1), or nil behind the camera.
+-- 0..1, nil behind the camera
 function Game:screen(world)
     return self.props.scene:project(self.props:toFiller(world))
 end
 
----How big `r` metres across the view at a world point looks, as a fraction of the screen's height.
+-- as a fraction of the screen's height
 function Game:screenSize(world, r)
     local scene = self.props.scene
     local p = self.props:toFiller(world)
@@ -287,14 +248,13 @@ function Game:screenSize(world, r)
     return math.abs(bx - ax) * w / h
 end
 
----Pixels from the cursor to a world point (huge when it is off screen).
+-- huge when it's off screen
 function Game:pixels(world)
     local x, y = self:screen(world)
     if not x then return math.huge end
     return Scene.pixels(x, y, self.mx, self.my)
 end
 
----The point under the cursor on the plane through `through` that faces the camera (world).
 function Game:cursorAt(through)
     local props = self.props
     local scene = props.scene
@@ -306,7 +266,6 @@ function Game:cursorAt(through)
     return props:filler(origin + dir * (Vec.dot(p - origin, n) / d))
 end
 
----Keeps a carried thing out of the car's body and above the ground.
 function Game:keepOut(p, r)
     local props = self.props
     local q = props:toFiller(p)
@@ -319,7 +278,7 @@ function Game:keepOut(p, r)
     return p
 end
 
----Turning a cap by circling the cursor round it. h: { screw, angle }. Returns the screw's events.
+-- h: { screw, angle }. Returns the screw's events.
 function Game:circle(h, centre)
     local cx, cy = self:screen(centre)
     if not cx then return {} end
@@ -335,7 +294,6 @@ function Game:circle(h, centre)
     return events
 end
 
----A ring marker on a world point this frame.
 function Game:mark(id, world, marker)
     local x, y = self:screen(world)
     if not x then return end
@@ -344,15 +302,12 @@ function Game:mark(id, world, marker)
     self.markers[#self.markers + 1] = marker
 end
 
--- The ped -------------------------------------------------------------------------------------
-
----Plays one of the tr_sf_anims clips. scrub: held still, moved by Game:scrub.
+-- scrub: held still, moved by Game:scrub.
 function Game:play(clip, flags, blend)
     TaskPlayAnim(PlayerPedId(), DICT, clip, blend or 4.0, -(blend or 4.0), -1, flags or 1, 0.0, false, false, false)
     self.playing, self.scrubbing = clip, false
 end
 
----Holds clip at phase (0..1), starting it if it isn't playing.
 function Game:scrub(clip, phase, flags)
     local ped = PlayerPedId()
     if self.playing ~= clip or not IsEntityPlayingAnim(ped, DICT, clip, 3) then self:play(clip, flags or 2, 8.0) end
@@ -368,7 +323,6 @@ function Game:lips()
     return (GetPedBoneCoords(ped, LIPS[1], 0.0, 0.0, 0.0) + GetPedBoneCoords(ped, LIPS[2], 0.0, 0.0, 0.0)) * 0.5
 end
 
----Walks the ped to `spot` facing `heading`. Returns a function that is true once it is there.
 function Game:walkTo(spot, heading)
     local ped = PlayerPedId()
     FreezeEntityPosition(ped, false)
@@ -385,10 +339,7 @@ function Game:walkTo(spot, heading)
     end
 end
 
--- Spills ----------------------------------------------------------------------------------------
-
----Fuel running onto the ground at `at` (world): a petrol puddle that grows (flammable), once in a while.
----later: only note where it will spill (for the server), the puddle shows once it does.
+-- later: only note where it will spill (for the server); the puddle shows once it does.
 function Game:puddle(at, key, share, later)
     self.decals = self.decals or {}
     local d = self.decals[key]
@@ -402,9 +353,6 @@ function Game:puddle(at, key, share, later)
     AddPetrolDecal(at.x, at.y, at.z, 2.0, d.size, 1.0)
 end
 
--- Priming: the blow method ----------------------------------------------------------------------
-
----A new green zone for the next puff: narrower as the hose fills.
 function Game:newZone()
     local k = Clamp(self.progress / math.max(1, self.session.puffs - 1), 0.0, 1.0)
     local width = Lerp(ZONE_WIDTH[1], ZONE_WIDTH[2], k)
@@ -413,7 +361,6 @@ function Game:newZone()
     self.rate = PRESSURE_RATE * (1.0 + PRESSURE_GROWTH * self.progress) * (0.9 + math.random() * 0.2)
 end
 
----The player let go (or blew far too hard): judge the puff and tell the server.
 function Game:release()
     local kind = 'good'
     if self.pressure >= self.zone[2] then
@@ -452,7 +399,6 @@ function Game:release()
     end)
 end
 
----Moves the breath along and scrubs the blow clip to it.
 function Game:breathe(dt)
     local blow = self.step == 'prime' and not self.ending and (IsDisabledControlPressed(0, KEY.click) or IsDisabledControlPressed(0, KEY.blow))
     if self.step ~= 'prime' and (self.stage == 'inhale' or self.stage == 'ready') then self.stage = 'settle' end
@@ -475,7 +421,6 @@ function Game:breathe(dt)
         self.breath = math.min(1.0, self.breath + dt * (1.0 - BLOWN) / EXHALE_TIME)
         if self.breath >= 1.0 then
             self.puffIndex, self.breath = (self.puffIndex + 1) % PUFFS_IN_CLIP, 0.0
-            -- Once the fuel runs there is nothing left to blow: rest at the start of a puff.
             self.stage = self.step == 'prime' and 'inhale' or 'rest'
         end
     end
@@ -483,8 +428,7 @@ function Game:breathe(dt)
     self:scrub(self.clip, (self.puffIndex + self.breath) / PUFFS_IN_CLIP, 1)
 end
 
----Pins the blow hose as the clip moves the hands: its end between the lips, held in the right fist below
----them and in the left fist out of the filler (offsets in ped space, rig.lua clips).
+-- Offsets in ped space, rig.lua clips.
 function Game:holdBlowHose(dt)
     local props, rope = self.props, self.props.blow
     local layout = RIG.clips[self.clip]
@@ -494,8 +438,7 @@ function Game:holdBlowHose(dt)
     local fist = self:hand() + Mat.apply(rot, layout.gripFromHand)
     local left = GetPedBoneCoords(ped, LEFT_HAND, 0.0, 0.0, 0.0) + Mat.apply(rot, layout.leftGripFromHand)
     if not self.leftNode then
-        -- The first node that reaches the left fist from where the hose comes out of the filler (a
-        -- little slack, never stretched).
+        -- A little slack, never stretched.
         local fed = rope.ends[1] and rope.ends[1].fed or 0.0
         local reach = fed + #(left - props:filler(RIG.filler.blowPath[1])) + 0.01
         self.leftNode = Clamp(math.ceil(reach / rope.seg) + 1, 2, rope.count - 5)
@@ -539,19 +482,16 @@ Game.steps.prime = {
             tone = self.pressure > self.zone[2] and 'danger' or 'accent' }
         self.strikeState = { label = t('gulps'), used = self.strikes, max = self.session.maxStrikes }
 
-        -- One box per good puff it takes.
         local done = self.progress
         self.tools = {}
         for i = 1, self.session.puffs do self.tools[i] = { label = tostring(i), done = i <= done, active = i == done + 1 } end
     end,
 }
 
--- Flow ------------------------------------------------------------------------------------------
-
-local GOOD_DEPTH = 0.22 -- metres down the can's neck the hose has to be so the flow can't flick it out
+local GOOD_DEPTH = 0.22 -- metres down the can's neck so the flow can't flick the hose out
 Game.GOOD_DEPTH = GOOD_DEPTH
 
----Litres that have come out of the hose so far, by this client's clock (the server's count decides).
+-- the server's count decides
 function Game:flowed()
     if not self.flowAt then return 0.0 end
     local seconds = (self.now - self.flowAt) / 1000
@@ -559,7 +499,6 @@ function Game:flowed()
     return Clamp((seconds - travel) * self.session.flowRate, 0.0, self.session.available)
 end
 
----Where fuel that runs down the can's end puddles (world).
 function Game:canEnd()
     return self.props:can(vec3(RIG.can.size.x / 2 + 0.12, 0.0, 0.0))
 end
@@ -596,14 +535,12 @@ Game.steps.flow = {
         props.fuel.from, props.fuel.to = 0.0, front
         local running = front >= rope.length - 0.001
 
-        -- Into the can.
         local litres = self:flowed()
         local out = 0.0
         local into = litres - self.spilled
         props.streams[1] = nil
 
-        -- The can is full: the fuel backs up into the funnel, then runs over its rim and off the can's end
-        -- (the neck is by the end, the rim reaches past it).
+        -- The can is full: the fuel backs up into the funnel, then runs over its rim and off the can's end.
         local room, funnel = self.session.room, props.funnel
         local extra = math.max(0.0, into - room)
         funnel.level = math.min(extra, SiphonProps.FUNNEL_HOLDS)
@@ -654,15 +591,10 @@ Game.steps.flow = {
     end,
 }
 
--- HUD -----------------------------------------------------------------------------------------
--- Drawn by the page (TR.ui.hud). The state is rebuilt every frame; only changes are sent.
-
-local MARKERS_MOVING = 50 -- ms: while the camera moves, the markers on screen are sent this often (not every frame)
+local MARKERS_MOVING = 50 -- ms: while the camera moves every marker changes each frame, so they're sent this often instead
 
 function Game:draw()
     if self.ending then return TR.ui.hud.hide() end
-    -- While the camera glides to a new shot every marker moves on screen every frame, and each change is
-    -- a message to the page: during the move they follow at 20 a second.
     local markers = #self.markers > 0 and self.markers or nil
     if markers and not self.props.scene:cameraSettled() then
         if self.markersAt and self.now - self.markersAt < MARKERS_MOVING then
@@ -681,7 +613,7 @@ function Game:draw()
     })
 end
 
----A loop's params rounded, so the mirror only sends changes that can be heard.
+-- Rounded so the mirror only sends changes that can be heard.
 local function rounded(params)
     if not params then return nil end
     local out = {}
@@ -689,9 +621,7 @@ local function rounded(params)
     return out
 end
 
----Continuous sounds the step asked for this frame. The page only gets changes, and levels go in steps
----of 0.05 (the page glides between them): a level that changes every frame (blowing harder) would
----otherwise cross over to the page every frame.
+-- Levels go in steps of 0.05 (the page glides between them), else a changing level crosses to the page every frame.
 function Game:soundLoops()
     local active = {}
     for _, id in ipairs(LOOPS) do
@@ -707,10 +637,7 @@ function Game:soundLoops()
     if self.mirror then self.mirror:setLoops(active) end
 end
 
--- Players nearby ----------------------------------------------------------------------------------
--- They see the props from what this game sends (TR.mirror, props.lua SiphonView) and the
--- player's ped at the same point of its clip: the network plays the clip for them, but not held where
--- the game scrubs it.
+-- The network plays the ped's clip for nearby players, but not held where the game scrubs it.
 
 local CLIPS = { 'putdown' } -- every clip the game plays, in a fixed order: the mirror sends the number
 for name in pairs(RIG.clips) do
@@ -722,7 +649,6 @@ local CLIP_NUMBER = {}
 for i, name in ipairs(CLIPS) do CLIP_NUMBER[name] = i end
 Game.CLIPS = CLIPS
 
----Game state for the mirror, at each of its updates.
 function Game:mirrorState(sender)
     self.props:mirrorState(function(key, list) sender:setState(key, list) end)
     local clip = self.playing and CLIP_NUMBER[self.playing]
@@ -733,20 +659,18 @@ function Game:mirrorState(sender)
     end
 end
 
----The player's ped on this client, or 0.
 local function ownerPed(replica)
     local player = GetPlayerFromServerId(replica.owner)
     return player ~= -1 and GetPlayerPed(player) or 0
 end
 
----Lets the ped's clip play on at its own speed again, if it was held.
 local function releasePed(replica, entity)
     local held = replica.pedClip
     replica.pedClip = nil
     if held and entity ~= 0 and IsEntityPlayingAnim(entity, DICT, held, 3) then SetEntityAnimSpeed(entity, DICT, held, 1.0) end
 end
 
----Holds the player's ped where its clip is scrubbed, eased (a clip that wraps round jumps).
+-- eased: a clip that wraps round jumps
 local function holdPed(replica, dt)
     local ped = replica.state.ped
     local name = ped and CLIPS[ped[1]]
@@ -787,8 +711,6 @@ Mirror.teardown.siphon = function(replica)
     replica.siphon = nil
 end
 
--- Loop ----------------------------------------------------------------------------------------
-
 function Game:controls()
     DisableAllControlActions(0)
     EnableControlAction(0, 249, true) -- push to talk
@@ -809,7 +731,7 @@ function Game:controls()
         return
     end
 
-    -- ESC: gives up during the setup and priming, skips the rest of the pack-up. The flow stops itself.
+    -- ESC gives up during the setup and priming, skips the rest of the pack-up. The flow stops itself.
     local escape = IsDisabledControlJustPressed(0, KEY.pause) or IsDisabledControlJustPressed(0, KEY.back)
     local step = Game.steps[self.step]
     if escape and step and step.packing then
@@ -820,11 +742,10 @@ function Game:controls()
     end
 end
 
----Held (or pressed this frame) keys, for steps.
 function Game:key(name) return IsDisabledControlPressed(0, KEY[name]) end
 function Game:keyPressed(name) return IsDisabledControlJustPressed(0, KEY[name]) end
 
----Why the attempt can't go on (a locale key), or nil while it can.
+-- a locale key, or nil while it can go on
 function Game:interrupted()
     if IsEntityDead(PlayerPedId()) then return 'no_session' end
     if not DoesEntityExist(self.vehicle) then return 'vehicle_gone' end
@@ -861,7 +782,7 @@ function Game:loop()
     end
 end
 
----Runs the minigame to the end. Blocks the calling thread.
+-- result: 'done', 'gave_up', 'cancelled' or why the attempt ended
 ---@return string result
 ---@return number? litres into the can
 ---@return number? can percent in the can afterwards

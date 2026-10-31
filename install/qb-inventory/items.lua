@@ -1,4 +1,3 @@
--- tr_minigames items for qb-inventory (QBCore).
 -- Paste these entries into qb-core/shared/items.lua, inside QBShared.Items.
 -- Images: copy install/images/*.png to qb-inventory/html/images/.
 

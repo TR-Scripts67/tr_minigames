@@ -9,7 +9,7 @@ local function notify(key, kind)
     TR.notify.send({ description = t(key), type = kind or 'error' })
 end
 
----Sets the car's alarm off. The alarm natives need control of the car.
+-- The alarm natives need control of the car.
 local function soundAlarm(vehicle)
     CreateThread(function()
         NetworkRequestControlOfEntity(vehicle)
@@ -22,14 +22,14 @@ local function soundAlarm(vehicle)
     end)
 end
 
----The lock is open but the car has an alarm: it goes off when the door opens.
 local function armAlarm(vehicle, door)
     CreateThread(function()
-        local index = Lockpick.doorIndex[door]
+        local index = Lockpick.doorIndex[door] -- nil on a bike: it goes off when someone gets on
         local deadline = GetGameTimer() + 60000
 
         while GetGameTimer() < deadline and DoesEntityExist(vehicle) do
-            if GetVehicleDoorAngleRatio(vehicle, index) > 0.05 or GetVehiclePedIsIn(PlayerPedId(), false) == vehicle then
+            local opened = index and GetVehicleDoorAngleRatio(vehicle, index) > 0.05
+            if opened or GetVehiclePedIsIn(PlayerPedId(), false) == vehicle then
                 return soundAlarm(vehicle)
             end
             Wait(100)
@@ -37,12 +37,11 @@ local function armAlarm(vehicle, door)
     end)
 end
 
----Picks the lock of `door` on `vehicle`, or of the nearest lockable door.
 local function pick(vehicle, door)
     if busy then return end
     if TR.cache.vehicle then return end -- in a car the same key hotwires instead
 
-    if not vehicle then vehicle, door = Lockpick.nearestDoor() end
+    if not vehicle then vehicle, door = Lockpick.nearestLock() end
     if not vehicle then return notify('no_lock') end
 
     busy = true
@@ -78,7 +77,6 @@ RegisterKeyMapping(cfg.command, t('keybind'), 'keyboard', cfg.key)
 -- For an inventory's "use" action, e.g. ox_inventory: client = { export = 'tr_minigames.lockpick' }
 exports('lockpick', function() pick() end)
 
--- Prompt (TR.ui.textui) next to a locked door you could pick.
 if cfg.prompt then
     CreateThread(function()
         local PROMPT = 'tr_minigames:lockpick'
@@ -86,7 +84,7 @@ if cfg.prompt then
         while true do
             local vehicle
             if not busy and not TR.cache.vehicle then
-                vehicle = Lockpick.nearestDoor()
+                vehicle = Lockpick.nearestLock()
                 if vehicle and (not Lockpick.isLocked(vehicle) or (cfg.item and not TR.inventory.hasItem(cfg.item))) then
                     vehicle = nil
                 end
@@ -107,13 +105,15 @@ if cfg.prompt then
     end)
 end
 
--- "Pick the lock" on the door handle, for servers with ox_target or qb-target. Not on tr_core's own
--- interaction (the default target), which would offer it at every car: there it's the command, the key,
--- the item's use or the prompt above.
+-- Not on tr_core's own interaction, which would offer it at every car.
 local hasTarget, targetSystem = pcall(TR.system, 'target')
 if cfg.target and hasTarget and targetSystem ~= 'tr_core' then
     local bones = {}
     for _, door in ipairs(cfg.doors) do bones[#bones + 1] = 'handle_' .. door end
+    if cfg.vehicleTypes.bike then
+        bones[#bones + 1] = 'forks_u'
+        bones[#bones + 1] = 'handlebars'
+    end
 
     TR.target.addGlobalVehicle({
         {
@@ -123,14 +123,16 @@ if cfg.target and hasTarget and targetSystem ~= 'tr_core' then
             distance = cfg.reach + 0.5,
             bones = bones,
             items = cfg.item or nil,
-            canInteract = function(entity) return not busy and Lockpick.isLocked(entity) end,
+            canInteract = function(entity)
+                if busy or not Lockpick.isLocked(entity) then return false end
+                return not IsThisModelABike(GetEntityModel(entity)) or Lockpick.isBike(entity)
+            end,
             onSelect = function() pick() end,
         },
     })
 end
 
--- Live fitting of the lock to a car's door: /lockpick_rig <back> <up> [out]
--- Prints a line for Config.lockpick.vehicleFits so the fit sticks for that model.
+-- /lockpick_rig <back> <up> [out]: prints a line for Config.lockpick.vehicleFits
 if cfg.devMode then
     RegisterCommand('lockpick_rig', function(_, args)
         local game = Lockpick.current
@@ -138,11 +140,17 @@ if cfg.devMode then
         if game then
             vehicle, door = game.vehicle, game.door
         else
-            vehicle, door = Lockpick.nearestDoor()
+            vehicle, door = Lockpick.nearestLock()
         end
-        if not vehicle then return print('[lockpick] stand at the door you want to fit') end
+        if not vehicle then return print('[lockpick] stand at the door or bike you want to fit') end
 
         local model = Lockpick.modelName(vehicle)
+        if door == 'bike' then
+            local fit, source = Lockpick.fit(model)
+            return print(('[lockpick] %s uses the %s fit; move it with /lockpick_fitall %s'):format(model,
+                fit.x and source or 'bone', model))
+        end
+
         local back, up, out = tonumber(args[1]), tonumber(args[2]), tonumber(args[3])
 
         if back and up then
@@ -162,15 +170,15 @@ if cfg.devMode then
         TR.notify.send({ description = line, type = 'info' })
     end, false)
 
-    -- Live tuning of the camera: /lockpick_cam <x> <y> <z> <targetX> <targetY> <targetZ>
+    -- /lockpick_cam <x> <y> <z> <targetX> <targetY> <targetZ>
     RegisterCommand('lockpick_cam', function(_, args)
         local n = {}
         for i = 1, 6 do n[i] = tonumber(args[i]) end
 
-        local cam = cfg.camera
+        local game = Lockpick.current
+        local cam = game and game.cam or cfg.camera
         if n[6] then
             cam.pos, cam.target = vec3(n[1], n[2], n[3]), vec3(n[4], n[5], n[6])
-            local game = Lockpick.current
             if game then game.scene:moveCamera(cam.pos, cam.target) end
         end
 

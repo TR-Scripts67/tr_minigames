@@ -13,12 +13,14 @@ local function hotwire()
     if busy then return end
 
     local vehicle = TR.cache.vehicle
-    if not vehicle then return end -- on foot the same key picks door locks (lockpick)
-    if TR.cache.seat ~= -1 then return notify('not_driver') end
+    if not vehicle then return end -- on foot the same key picks door locks
+    local bike = Hotwire.isBike(vehicle)
+    if TR.cache.seat ~= -1 then return notify(bike and 'not_rider' or 'not_driver') end
+    if not Hotwire.canTry(vehicle) or (bike and not Hotwire.bikeFit(vehicle)) then return notify('wrong_vehicle') end
 
     busy = true
     TR.ui.textui.hide('tr_minigames:hotwire')
-    local ok, data = TR.callback.await('tr_minigames:hotwire:start', VehToNet(vehicle))
+    local ok, data = TR.callback.await('tr_minigames:hotwire:start', VehToNet(vehicle), GetVehicleClass(vehicle))
 
     if not ok then
         busy = false
@@ -43,8 +45,7 @@ end
 RegisterCommand(cfg.command, hotwire, false)
 RegisterKeyMapping(cfg.command, t('keybind'), 'keyboard', cfg.key)
 
--- Prompt (TR.ui.textui) while sitting in a car you can't start. A hotwired car whose engine was
--- turned off counts too: it has to be wired again.
+-- A hotwired car whose engine was turned off can't be started either: it has to be wired again.
 CreateThread(function()
     local PROMPT = 'tr_minigames:hotwire'
 
@@ -52,10 +53,10 @@ CreateThread(function()
         local vehicle = TR.cache.vehicle
 
         if vehicle and TR.cache.seat == -1 and not busy and not GetIsVehicleEngineRunning(vehicle)
-            and not TR.keys.hasKeys(vehicle) then
+            and not TR.keys.hasKeys(vehicle) and Hotwire.canTry(vehicle) then
             TR.ui.textui.show(PROMPT, {
                 key = TR.ui.keyOf(cfg.command, cfg.key),
-                text = t('prompt_hotwire'),
+                text = t(Hotwire.isBike(vehicle) and 'prompt_hotwire_bike' or 'prompt_hotwire'),
                 sub = cfg.item and t('prompt_item') or nil,
             })
         else
@@ -66,12 +67,40 @@ CreateThread(function()
     end
 end)
 
--- Live fitting of the column to the car you're in: /hotwire_rig <x> <y> <z> [pitch]
--- Prints a line for Config.hotwire.vehicleFits so the fit sticks for that model.
+-- /hotwire_rig <x> <y> <z> [pitch]: prints a line for Config.hotwire.vehicleFits, or on a bike for bikeFits (the
+-- switch block's middle in the bike's space)
 if cfg.devMode then
+    local function vec(p) return ('vec3(%.4f, %.4f, %.4f)'):format(p.x, p.y, p.z) end
+
+    local function printBikeFit(vehicle)
+        local model = Hotwire.modelName(vehicle)
+        local fit, source = Hotwire.bikeFit(vehicle)
+        if not fit then return print('[hotwire] ' .. model .. ' has no hbgrip_r bone') end
+
+        local function cam(c) return ('{ %s, %s }'):format(vec(c[1]), vec(c[2])) end
+        local swing = fit.swing and (' swing = %.1f,'):format(fit.swing) or ''
+        local line = ("['%s'] = { switch = %s, bar = %s,%s open = %s, wires = %s, button = %s },"):format(
+            model, vec(fit.switch), vec(fit.bar), swing, cam(fit.open), cam(fit.wires), cam(fit.button))
+        print(('[hotwire] %s uses the %s fit; a changed fit takes effect from the next attempt'):format(model, source))
+        print('[hotwire] add to Config.hotwire.bikeFits: ' .. line)
+        TR.notify.send({ description = line, type = 'info' })
+    end
+
+    local function setBikeFit(vehicle, key, value)
+        local model = Hotwire.modelName(vehicle)
+        cfg.bikeFits[model] = cfg.bikeFits[model] or {}
+        cfg.bikeFits[model][key] = value
+    end
+
     RegisterCommand('hotwire_rig', function(_, args)
         local vehicle = TR.cache.vehicle
         if not vehicle then return print('[hotwire] sit in the car you want to fit') end
+
+        if Hotwire.isBike(vehicle) then
+            local x, y, z = tonumber(args[1]), tonumber(args[2]), tonumber(args[3])
+            if Hotwire.bikeFit(vehicle) and x and y and z then setBikeFit(vehicle, 'switch', vec3(x, y, z)) end
+            return printBikeFit(vehicle)
+        end
 
         local model, class = Hotwire.modelName(vehicle), GetVehicleClass(vehicle)
         local current = Hotwire.fit(model, class)
@@ -91,13 +120,24 @@ if cfg.devMode then
         TR.notify.send({ description = line, type = 'info' })
     end, false)
 
-    -- Live tuning of the camera for the current step: /hotwire_cam <x> <y> <z> <targetX> <targetY> <targetZ>
+    -- /hotwire_cam <x> <y> <z> <targetX> <targetY> <targetZ>; on a bike in the switch block's space (rig.lua `bike`)
     RegisterCommand('hotwire_cam', function(_, args)
         local n = {}
         for i = 1, 6 do n[i] = tonumber(args[i]) end
 
         local game = Hotwire.current
         local wires = game and game.stage ~= 'screws'
+
+        local vehicle = TR.cache.vehicle
+        if vehicle and Hotwire.isBike(vehicle) then
+            if n[6] then
+                local cam = { vec3(n[1], n[2], n[3]), vec3(n[4], n[5], n[6]) }
+                local stage = game and game.stage
+                setBikeFit(vehicle, (stage == 'open' or stage == 'button') and stage or 'wires', cam)
+                if game and game.bike then game.scene:moveCamera(game:toRig(cam[1]), game:toRig(cam[2])) end
+            end
+            return printBikeFit(vehicle)
+        end
         local cam = cfg.camera
 
         if n[6] then

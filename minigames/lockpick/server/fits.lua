@@ -1,12 +1,5 @@
--- Where the lock sits on each car model, made in game with /lockpick_autofit (client/autofit.lua)
--- or /lockpick_fitall (client/fitter.lua) and kept in minigames/lockpick/fits.json. Every client
--- gets them on join and when one is saved. Lockpick.fit picks a saved fit over
--- Config.lockpick.vehicleFits.
---
--- Two kinds:
---   { back, up, out }                      from the handle's bone, onto the door's collision (by hand)
---   { x, y, z, pitch, yaw, auto?, check? }  exactly where, in the car's space (measured; `check`:
---                                            the measuring wasn't sure, have a look)
+-- Saved fits win over Config.lockpick.vehicleFits.
+-- { back, up, out } from the handle's bone (by hand), or { x, y, z, pitch, yaw, auto?, check? } in the car's space (measured).
 
 local cfg = Config.lockpick
 
@@ -22,7 +15,6 @@ local function num(v, limit)
     if v and v == v and math.abs(v) <= limit then return v end
 end
 
----A clean copy of a fit, or nil if it isn't one.
 local function clean(fit)
     if type(fit) ~= 'table' then return end
 
@@ -57,7 +49,7 @@ local function encode(f)
     return ('{ "back": %.3f, "up": %.3f, "out": %.3f }'):format(f.back, f.up, f.out)
 end
 
----One model per line, sorted, so the file reads (and diffs) well.
+-- One model per line, sorted, so the file reads and diffs well.
 local function save()
     local models = {}
     for model in pairs(fits) do models[#models + 1] = model end

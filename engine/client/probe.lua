@@ -1,73 +1,38 @@
---[[
-    Measures what the game draws (dev tools: the autofits). Scripts can't see a car's bodywork, only
-    its collision, which can sit centimetres inside the paint. So a camera looks at the car, small
-    magenta markers are drawn along each line of sight, and the resource's page reads the frame
-    (TR.ui.probeFrame) to see which are hidden behind the paint. A binary search per line finds the
-    paint to under a millimetre.
-
-    Surface space (the car's flank): u along the car (vehicle y), v up (vehicle z), h out of the
-    flank from a reference plane x = reference.x. `side` is which flank: -1 the left (driver's), 1 the right.
-
-        Probe.hooks = { say = print, phase = function(text) end }  -- log and progress
-        Probe.aim(vehicle, from, at, halfHeight)                    -- vehicle space; halfHeight metres at `at`
-        Probe.calibrate(nearWorld)                                  -- once per camera set-up a session
-        local list = Probe.prepare(vehicle, samples, reference, lo, hi)  -- samples { u, v }; start(s): see there
-        Probe.measure(list, rounds, inside)                         -- inside: the paint is between lo and hi
-        Probe.toSurface(vehicle, list, reference, side)             -- sample.h
-        Probe.draw()                                                -- every frame while running
-        Probe.stopAsked, Probe.skipAsked                            -- set by the caller's keys
-        Probe.stats                                                 -- { looks, ms, stale, caps, waits, frames, lost } so far
-        Probe.finish()                                              -- camera off
-
-    The game draws only so many markers a frame (about a hundred). Each frame shows one look: as
-    many markers as that allows, the probe finds the exact number by itself. The page sees a frame
-    a frame after it's drawn and its answer comes back a frame later, so a look isn't waited for:
-    the next goes up while it's read, and every line of sight goes on to its next marker as soon as
-    its answer is in. If the page turns out to see only every other frame, looks stay up two
-    frames each for a while.
-
-    Each look also draws corner markers: a row of five in a corner of the view, which say which look
-    the frame read shows and whether it was drawn in full. What is measured has to stay inside 92% of
-    the view (top to bottom) to keep clear of them. If they stop showing (something in front of the
-    camera, the game's help text), the probe finds a corner where they do, says so and keeps it.
-]]
+-- Collision can sit cm inside the paint, so markers are drawn and the page reads the frame to find it.
 
 Probe = {}
 
 local ROUNDS = 10                     -- binary search steps: 35 cm down to a third of a millimetre
-local SENTINELS = 5                   -- corner markers: two of the first four say which look it is, and one drawn last
-local CODES = { 3, 5, 6, 9, 10, 12 }  -- which two: one marker missing or one too many never passes for another look
-local MARKED = 3                      -- corner markers a look draws: two of the first four and the last
-local DEPTH = 4                       -- looks up at once that aren't read yet (fewer than #CODES: see Probe.measure)
-local CLOSE = 0.25                    -- they're this far in front of the camera to begin with
-local READS = 10                      -- frames a look may wait for its answer before it counts as unanswered
-local ROW = 8                         -- looks seen running whose frame before went by unread: the page sees every other frame
-local TWICE = 100                     -- then this many looks stay up two frames each
-local RETRIES = 4                     -- looks in a row that may go unanswered before measuring gives up
-local SETTLE = 30                     -- frames the game may take to draw from where the camera was put
+local SENTINELS = 5                   -- corner markers
+local CODES = { 3, 5, 6, 9, 10, 12 }  -- so one marker missing or one too many never passes for another look
+local MARKED = 3
+local DEPTH = 4                       -- must stay below #CODES
+local CLOSE = 0.25                    -- m in front of the camera
+local READS = 10                      -- frames
+local ROW = 8                         -- unread frames in a row before the page counts as seeing every other frame
+local TWICE = 100                     -- looks that then stay up two frames each
+local RETRIES = 4
+local SETTLE = 30                     -- frames
 local MAGENTA = { 255, 0, 255 }
-local CALIBRATOR = joaat('tr_lp_bezel') -- the lock's chrome ring: its face is flat from 8 to 12.6 mm out, at y = -2.5 mm
+local CALIBRATOR = joaat('tr_lp_bezel') -- its face is flat from 8 to 12.6 mm out, at y = -2.5 mm
 
 Probe.ROUNDS = ROUNDS
 Probe.hooks = { say = print, phase = function() end }
 Probe.stopAsked, Probe.skipAsked = false, false
-Probe.drawList = nil                  -- { { world, size, color? }, ... } drawn every frame while set
-Probe.view = {}                       -- the current camera: world position, axes, fov, metres per pixel
--- looks drawn, ms they took, frames read too early, times over the cap, frames waited for the camera,
--- frames measuring took, looks whose frame went by unread (drawn again)
+Probe.drawList = nil                  -- { { world, size, color? }, ... }
+Probe.view = {}
+-- stale: read too early, caps: over the cap, waits: camera frames waited, lost: looks drawn again
 Probe.stats = { looks = 0, ms = 0, stale = 0, caps = 0, waits = 0, frames = 0, lost = 0 }
 
 local MAX_PER_FRAME = 2400
-local perFrame = 400                  -- markers drawn at once (sentinels too): grows while the game draws them all and
-local drawn, capped = 0, nil          -- homes in between the most it drew in full and the fewest it didn't
-local settled = false                 -- found how many: said so
-local reaches = {}                    -- calibrate(): view.reach for each camera set-up seen this session
-local placeFor = {}                   -- recover(): where the corner markers show, for each camera set-up
-local toldSettle = false              -- said the game never caught up with the camera
+local perFrame = 400                  -- grows while the game draws them all, then homes in
+local drawn, capped = 0, nil
+local settled = false
+local reaches = {}
+local placeFor = {}
+local toldSettle = false
 local cam
 
--- Where the corner markers can go: each corner close to the camera, then each halfway to what it
--- looks at. The first is where they go until Probe.recover() finds they don't show there.
 local PLACES = {}
 for _, depth in ipairs({ 'close', 'halfway' }) do
     for _, c in ipairs({ { 'top left', -1, 1 }, { 'top right', 1, 1 }, { 'bottom right', 1, -1 }, { 'bottom left', -1, -1 } }) do
@@ -77,10 +42,8 @@ end
 
 local function say(text) Probe.hooks.say(text) end
 
----Draws the markers in Probe.drawList: call every frame. Notes the frame each list is first drawn
----in (list.drawn: the page can see it from the next frame on) and in how many frames (list.shown).
 function Probe.draw()
-    -- Nothing of the game's over the frame: its help text sits in the top left.
+    -- The help text would cover the corner markers.
     HideHelpTextThisFrame()
     ThefeedHideThisFrame()
     local list = Probe.drawList
@@ -96,12 +59,8 @@ function Probe.draw()
     end
 end
 
--- Camera --------------------------------------------------------------------------------------
-
----The scripted camera the probe looks through (created by Probe.aim).
 function Probe.camera() return cam end
 
----Puts the camera where `view` says: a new one if `fresh` (or there's none yet).
 local function point(view, fresh)
     if fresh or not cam then
         local old = cam
@@ -117,8 +76,7 @@ local function point(view, fresh)
     SetCamFov(cam, view.fov)
 end
 
----Where each corner marker is on screen, as the game draws now (asked again for every frame read:
----right after the camera moves, the game can still be a frame behind).
+-- Asked again on every read: right after the camera moves the game can still be a frame behind.
 local function project(view)
     for _, m in ipairs(view.sentinels) do
         local _, sx, sy = GetScreenCoordFromWorldCoord(m[1].x, m[1].y, m[1].z)
@@ -126,13 +84,10 @@ local function project(view)
     end
 end
 
----How far in front of the camera the corner markers at `place` are.
 local function depthOf(view, place)
     return place.depth == 'close' and CLOSE or math.max(CLOSE, view.distance * 0.5)
 end
 
----The corner markers at `place` (one of PLACES): a row of five at the very edge of the view, as big
----on screen wherever they are. Each is { world, size, sx, sy }.
 local function placeSentinels(view, place)
     local depth = depthOf(view, place)
     local h = depth * math.tan(math.rad(view.fov) * 0.5)
@@ -145,7 +100,6 @@ local function placeSentinels(view, place)
     project(view)
 end
 
----Where the game puts the spot the camera looks at, and a spot above it, on screen: { x, y, x, y }.
 local function landmarks(view)
     local above = view.at + view.up * (view.halfHeight * 0.8)
     local _, ax, ay = GetScreenCoordFromWorldCoord(view.at.x, view.at.y, view.at.z)
@@ -153,10 +107,7 @@ local function landmarks(view)
     return { ax, ay, bx, by }
 end
 
----Waits for the game's screen positions to be the camera's: right after it moves, they can be the
----old place's for some frames (more right after measuring), and every line of sight would be read
----at the wrong pixel. They are when the spot it looks at is in the middle of the screen and the
----spot above it where the view puts it (0.4 of the screen up).
+-- Screen positions can lag the camera for some frames after it moves (more right after measuring).
 local function settle(view)
     local want = { 0.5, 0.5, 0.5, 0.1 }
     local waited, got = 0, nil
@@ -176,8 +127,7 @@ local function settle(view)
     end
 end
 
----Points the camera from `fromV` at `atV` (vehicle space), `halfHeight` metres of view above and
----below `atV`.
+-- halfHeight: metres of view above and below atV
 function Probe.aim(vehicle, fromV, atV, halfHeight)
     local from = GetOffsetFromEntityInWorldCoords(vehicle, fromV.x, fromV.y, fromV.z)
     local at = GetOffsetFromEntityInWorldCoords(vehicle, atV.x, atV.y, atV.z)
@@ -191,10 +141,10 @@ function Probe.aim(vehicle, fromV, atV, halfHeight)
         from = from, at = at, distance = distance, forward = forward, right = right, up = Vec.cross(right, forward), fov = fov,
         halfHeight = halfHeight,
         pixel = 2.0 * halfHeight / math.max(screenHeight, 480), -- metres per pixel at the surface
-        setup = math.floor(fov / 5.0 + 0.5),                    -- set-ups this alike share where the corner markers go
+        setup = math.floor(fov / 5.0 + 0.5),
     }
     Probe.view = view
-    view.reach = Probe.markerSize() -- until Probe.calibrate measures it: a sphere marker's scale is its radius
+    view.reach = Probe.markerSize() -- a sphere marker's scale is its radius
 
     local known = placeFor[view.setup]
     point(view, known and known.fresh)
@@ -204,7 +154,6 @@ function Probe.aim(vehicle, fromV, atV, halfHeight)
     placeSentinels(view, known and known.place or PLACES[1])
 end
 
----Gives the game its camera back.
 function Probe.finish()
     Probe.drawList = nil
     if cam then
@@ -218,13 +167,9 @@ function Probe.markerSize()
     return math.max(0.0035, Probe.view.pixel * 7.0)
 end
 
--- Probing -------------------------------------------------------------------------------------
+local lastRead
 
-local lastRead -- what the corner markers last read as, and what was drawn: for the log
-
----Do the corner markers show as drawn? Two looks with only them in: the first four, then the last
----alone (something in the corner that looks like a marker can't pass for them, and neither passes
----for a look: a look draws two of the first four).
+-- Two looks so something in the corner that looks like a marker can't pass for them.
 local function cornerReads(view)
     for pass = 1, 2 do
         local list, want = {}, {}
@@ -258,7 +203,6 @@ local function cornerReads(view)
     return true
 end
 
----What the game says about the camera it draws from, for the log.
 local function describeCamera(view)
     local parts = {}
     if GetFinalRenderedCamCoord then
@@ -273,11 +217,7 @@ local function describeCamera(view)
     return table.concat(parts, ', ')
 end
 
----A look went unanswered: the corner markers didn't show as drawn, for longer than a late frame
----explains. Checks them again where they are, then tries the other places for them (PLACES), then
----all of them again with a new camera. What works is kept for this camera set-up, so it's looked
----for once a session, and said in the log with what the game said about its camera. False if they
----show nowhere.
+-- false if the corner markers show nowhere
 function Probe.recover()
     local view = Probe.view
     if cornerReads(view) then return true end
@@ -308,8 +248,6 @@ function Probe.recover()
     return false
 end
 
----After a look of `total` markers: the game drew them all (ok) or not. `full`: the look was as
----big as allowed. Homes in on how many it draws.
 local function drewAll(total, ok, full)
     if ok then
         drawn = math.max(drawn, total)
@@ -327,7 +265,7 @@ local function drewAll(total, ok, full)
     end
     Probe.stats.caps = Probe.stats.caps + 1
     settled = false
-    -- Fewer than it drew before: something else draws markers too. Start the search again lower.
+    -- Fewer than it drew before: something else draws markers too.
     if total <= drawn then drawn = math.floor(total * 0.8) end
     capped = math.min(capped or total, total)
     perFrame = math.max(12 + SENTINELS, drawn > 0 and (drawn + capped) // 2 or math.floor(total * 0.6))
@@ -335,32 +273,13 @@ local function drewAll(total, ok, full)
 end
 
 local probeCount = 0
-local flying = {}  -- looks up whose frame hasn't been read, oldest first; kept from one measure to the next (the page can still show them)
-local readAt       -- the frame the last read was asked in
-local twice = 0    -- looks still to stay up two frames each (the page has been seeing every other frame)
-local row = {}     -- for the last looks seen that were up one frame: whether the page saw the frame before
+local flying = {}  -- kept across measures: the page can still show them
+local readAt
+local twice = 0
+local row = {}
 
----Binary search along each sample's line of sight for where something hides the markers.
----Each sample needs: world (start of its line), dir (line of sight), lo, hi (search range along
----it) and sx, sy. Samples from several maps can go in at once.
----Afterwards s.mid is where the markers stopped showing, or s.hole / s.blocked is set; s.lo and
----s.hi are what the search narrowed them to.
----
----Each sample is read at s.hi first (still seen there: nothing is in the way, a gap or a hole),
----then at s.lo (hidden even there: something sticks out in front, a mirror), then `rounds` times
----halfway between. `inside`: the paint is expected between s.lo and s.hi (close looks), so the
----halves come first and an end is read only if the search never left it: same answers (a marker
----seen at a depth is seen at every depth in front of it), two reads fewer for most samples.
----
----Every frame a new look goes up while the ones before it are read (the corner markers say which
----look a frame shows), with each read whose last one is answered, fewest reads done first. Room
----left over goes to the read after one still being answered, as if the paint were where the line
----starts (the callers start them on the paint they expect): if it wasn't, that read is thrown
----away. So each sample reads the same depths in the same order as one look at a time would, just
----sooner. A look's frame the page missed (it saw a later one) is drawn again; if it only ever sees
----every other frame, looks stay up two frames each for a while. Up to DEPTH looks are unread at
----once, so the frame read is one of the last DEPTH + 1 looks, which never share their corner
----markers.
+-- Needs s.world, dir, lo, hi, sx, sy. Sets s.mid where the markers stop showing, or s.hole / s.blocked.
+-- inside: the paint is expected between s.lo and s.hi, so the halves are read before the ends.
 function Probe.measure(samples, rounds, inside)
     local size = Probe.markerSize()
     local stats, view = Probe.stats, Probe.view
@@ -368,41 +287,34 @@ function Probe.measure(samples, rounds, inside)
     local _, height = GetActiveScreenResolution()
     height = math.max(height, 480)
     local width = height * GetAspectRatio(false)
-    local apart = 2.0 * size / view.pixel + 4.0 -- a marker's width in pixels and a margin
+    local apart = 2.0 * size / view.pixel + 4.0
     local apart2 = apart * apart
-    local last = rounds + 1                     -- reads: 0 at s.hi, 1 at s.lo, then the rounds
-    local reach = view.reach                    -- a marker on the paint shows up to this far in
+    local last = rounds + 1                     -- 0 at s.hi, 1 at s.lo, then the rounds
+    local reach = view.reach
 
-    -- Looks still up from before (the last measure's reads thrown away, or one stopped by Esc,
-    -- Backspace or an error) say nothing now, but the page can still show them.
     for _, look in ipairs(flying) do look.dead = true end
 
-    -- Per sample: its next read (0 at s.hi, 1 at s.lo, then the rounds, then inside an end), its
-    -- place in the list, and its reads up and not answered, oldest first: { n, at, seen = the
-    -- guess, lo, hi, over = the search would end there, dead = thrown away, look }.
+    -- chain[s]: reads up for s, oldest first: { n, at, seen = the guess, lo, hi, over, dead, look }
     local step, order, chain = {}, {}, {}
-    local ready = {}      -- samples with no read up, whose search isn't over
-    local lo0, hi0 = {}, {} -- inside: where each search began
+    local ready = {}
+    local lo0, hi0 = {}, {}
     for i, s in ipairs(samples) do
         local halves = inside and rounds > 0 and s.lo < s.hi
         step[s], order[s], chain[s], ready[i] = halves and 2 or 0, i, {}, s
         if halves then lo0[s], hi0[s] = s.lo, s.hi end
     end
-    local left = #samples   -- searches not over
-    local missed = {}       -- samples whose last read's frame went by unread
-    local misses = 0        -- looks in a row that went unanswered
-    local seenIn, lostIn = {}, {} -- frames with a look up only then: the page saw it, or it went by unread
-    local shorts, shortest, gen = 0, nil, 0 -- reads that came back short since the last cap, the fewest markers asked of them
+    local left = #samples
+    local missed = {}
+    local misses = 0
+    local seenIn, lostIn = {}, {}
+    local shorts, shortest, gen = 0, nil, 0
 
-    ---inside: the end a search narrowed to lo..hi never left, or nil. Seen at every half: the paint
-    ---is just inside s.hi, or there's a hole; hidden at every half: just past s.lo, or it's blocked.
     local function edge(s, lo, hi)
         if not hi0[s] then return end
         if hi == hi0[s] then return hi end
         if lo == lo0[s] then return lo end
     end
 
-    ---The read after the ones up for `s` (each going as guessed), or nil if the search is over then.
     local function nextRead(s)
         local c = chain[s]
         local e = c[#c]
@@ -421,7 +333,7 @@ function Probe.measure(samples, rounds, inside)
             r.over = r.over or not seen
         elseif n <= last then
             if seen then r.lo = at else r.hi = at end
-            if n == last and edge(s, r.lo, r.hi) then r.over = false end -- the end is read next
+            if n == last and edge(s, r.lo, r.hi) then r.over = false end
         end
         return r
     end
@@ -431,10 +343,7 @@ function Probe.measure(samples, rounds, inside)
         return order[a] < order[b]
     end
 
-    -- The next look: the reads waiting, fewest done first, then reads ahead in the room left, no
-    -- two of its markers drawn close together (a seen marker next to a hidden one would show in
-    -- its probe pixels and make it look seen too; samples on the same spot of the screen, from
-    -- overlapping maps, go in different looks).
+    -- No two markers close on screen: a seen one next to a hidden one would read as seen too.
     local function putUp()
         local room = perFrame - MARKED
         local cells, reads = {}, {}
@@ -507,12 +416,11 @@ function Probe.measure(samples, rounds, inside)
         Probe.drawList = list
         stats.looks = stats.looks + 1
         local look = { list = list, code = code, reads = reads, room = room, gen = gen, up = GetFrameCount() }
-        look.span = twice > 0 and 2 or 1 -- frames it stays up at least (two while the page sees every other frame)
+        look.span = twice > 0 and 2 or 1
         twice = math.max(0, twice - 1)
         for _, p in ipairs(reads) do
             p[2].look = look
-            -- Read again after its frame went by unread: this look stays up until its frame is read
-            -- (else a frame missed now and then in step with the looks could miss it every time).
+            -- Held until read, else a frame missed now and then in step with the looks could miss it every time.
             if missed[p[1]] then look.hold = true end
         end
         flying[#flying + 1] = look
@@ -526,8 +434,6 @@ function Probe.measure(samples, rounds, inside)
         return false
     end
 
-    -- A look whose frame won't be read: its reads again (the ones after them were guessed on them).
-    -- `went`: its frame went by unread.
     local function back(look, went)
         if look.dead then return end
         for _, p in ipairs(look.reads) do
@@ -541,7 +447,6 @@ function Probe.measure(samples, rounds, inside)
         end
     end
 
-    -- What a look's frame says about each of its samples.
     local function answer(look, hits, from)
         for k, p in ipairs(look.reads) do
             local s, r = p[1], p[2]
@@ -555,8 +460,6 @@ function Probe.measure(samples, rounds, inside)
                 elseif n == 1 then
                     if not seen then s.blocked, over = true, true end
                 elseif n > last then
-                    -- inside: the end the search never left. A hole or blocked keeps its whole range,
-                    -- as when its end is read first.
                     if s.hi == hi0[s] then
                         if seen then s.hole, s.lo = true, lo0[s] end
                     elseif not seen then
@@ -574,7 +477,6 @@ function Probe.measure(samples, rounds, inside)
                 local c = chain[s]
                 table.remove(c, 1)
                 if over or seen ~= r.seen then
-                    -- Over, or not as guessed: the reads after it went by the wrong depths.
                     for _, later in ipairs(c) do later.dead = true end
                     chain[s] = {}
                     if over then left = left - 1 else ready[#ready + 1] = s end
@@ -585,8 +487,7 @@ function Probe.measure(samples, rounds, inside)
         end
     end
 
-    -- Reads the frame for the looks drawn before this frame (the page can't have the one drawn in
-    -- it yet).
+    -- Not the look drawn this frame: the page can't have it yet.
     local function read(now)
         project(view)
         local screen, from = {}, {}
@@ -615,11 +516,10 @@ function Probe.measure(samples, rounds, inside)
             if look.code == code then shown = i break end
         end
         if not shown then
-            stats.stale = stats.stale + 1 -- a frame from before them
+            stats.stale = stats.stale + 1
             return
         end
 
-        -- The ones before it went by unread: their reads again.
         for _ = 1, shown - 1 do
             local look = table.remove(flying, 1)
             if live(look) then
@@ -631,12 +531,10 @@ function Probe.measure(samples, rounds, inside)
         local look = flying[1]
         if not from[look] then
             if not live(look) then table.remove(flying, 1) end
-            return -- (or seen as soon as it was drawn: read again)
+            return
         end
 
-        -- Up one frame only: the page saw that frame. Did it see the frame before too? If it never
-        -- does (the look up then went by unread, ROW times running), it sees every other frame, and
-        -- the next TWICE looks stay up two frames each.
+        -- If the frame before keeps going unread (ROW times), the page sees every other frame.
         local list = look.list
         if list.shown == 1 and Probe.drawList ~= list then
             local d = list.drawn
@@ -658,8 +556,7 @@ function Probe.measure(samples, rounds, inside)
             drewAll(total, true, #look.reads >= look.room)
             answer(look, hits, from[look])
         elseif #look.reads > 12 then
-            -- The game drew fewer markers than asked (it's seen three times before it counts): the
-            -- same reads again, fewer at a time once it counts.
+            -- The game drew fewer markers than asked (it counts after three times): the same reads again.
             table.remove(flying, 1)
             back(look)
             if look.gen == gen then
@@ -670,23 +567,18 @@ function Probe.measure(samples, rounds, inside)
                 end
             end
         end
-        -- (a short look of a few markers: the corner markers don't read right; it goes unanswered)
     end
 
     while left > 0 do
         if Probe.stopAsked then error('stopped', 0) end
         if Probe.skipAsked then error('skipped', 0) end
 
-        -- Looks from before that the page has had READS frames to show are gone by now.
         local now = GetFrameCount()
         while flying[1] and flying[1].dead and now - flying[1].up > READS do table.remove(flying, 1) end
 
-        -- The next look goes up once the one up now has been drawn as many frames as it stays up,
-        -- or read if it's held.
         local top = flying[#flying]
         if #flying < DEPTH and (not top or (top.list.shown or 0) >= top.span and not top.hold) then putUp() end
 
-        -- A frame read, once a frame, if it can show one of them; else the next frame.
         local drawnBefore = false
         for _, look in ipairs(flying) do
             if look.list.drawn and look.list.drawn < now then drawnBefore = true break end
@@ -698,8 +590,7 @@ function Probe.measure(samples, rounds, inside)
             Wait(0)
         end
 
-        -- Now and then a frame isn't read in time (a hitch): the same reads again. If the corner
-        -- markers don't show any more, recover() finds where they do.
+        -- A hitch can leave a frame unread: the same reads again.
         local oldest
         for _, look in ipairs(flying) do
             if live(look) then oldest = look break end
@@ -710,7 +601,7 @@ function Probe.measure(samples, rounds, inside)
             if not Probe.recover() then
                 error('the markers can\'t be read from the game frame here (the corner markers show nowhere)', 0)
             end
-            flying = {} -- the frames recover() read came after them all
+            flying = {} -- recover() read frames after all of them
             if misses > RETRIES then
                 error('could not read the markers from the game frame (tr_core has to be up to date)', 0)
             end
@@ -722,9 +613,7 @@ function Probe.measure(samples, rounds, inside)
     stats.frames = stats.frames + GetFrameCount() - startFrame
 end
 
----Turns measured samples into surface space: s.u, s.v and s.h (out from the reference plane).
----A marker keeps showing a little past the paint (about its radius, plus whatever the game's
----anti-aliasing adds); view.reach is that distance, measured by Probe.calibrate().
+-- A marker shows a little past the paint (its radius plus anti-aliasing); view.reach is that distance.
 function Probe.toSurface(vehicle, samples, reference, side)
     local out = vec3(side * 1.0, 0.0, 0.0)
     for _, s in ipairs(samples) do
@@ -737,10 +626,7 @@ function Probe.toSurface(vehicle, samples, reference, side)
     end
 end
 
----Measures how far past a surface the markers keep showing (view.reach) on a surface whose place
----is known exactly: the bezel prop, held at `near` (world, a little in front of the car), facing
----the camera. It only depends on the marker's size and the camera's scale, which are the same for
----most cars, so each set-up is measured once a session.
+-- Only depends on marker size and camera scale, the same for most cars, so once a session per set-up.
 function Probe.calibrate(near)
     local view = Probe.view
     local key = ('%.5f %.7f'):format(Probe.markerSize(), view.pixel)
@@ -748,7 +634,7 @@ function Probe.calibrate(near)
         view.reach = reaches[key]
         return
     end
-    view.reach = Probe.markerSize() -- if this fails: a sphere marker's scale is its radius
+    view.reach = Probe.markerSize()
     Probe.hooks.phase('Calibrating the markers')
 
     if not HasModelLoaded(CALIBRATOR) then
@@ -790,10 +676,7 @@ function Probe.calibrate(near)
     end
 end
 
----Gets every sample ready: its point on the reference plane (x = reference.x), line of sight and
----screen position. lo/hi: search range along the line, from the plane. start(s), if given: the
----vehicle x the line starts at instead (on a surface known roughly, the line meets it about where
----it was aimed; from a flat plane it's off by the line's slant times the depth).
+-- lo/hi: search range from the plane; start(s): the vehicle x each line starts at instead
 function Probe.prepare(vehicle, samples, reference, lo, hi, start)
     local view = Probe.view
     local kept = {}
@@ -812,7 +695,6 @@ function Probe.prepare(vehicle, samples, reference, lo, hi, start)
     return kept
 end
 
----Where collision says the flank is at (u, v) on `side`: a first guess of the paint (x, vehicle space).
 function Probe.collisionX(vehicle, u, v, side)
     local from = GetOffsetFromEntityInWorldCoords(vehicle, side * 3.0, u, v)
     local to = GetOffsetFromEntityInWorldCoords(vehicle, 0.0, u, v)

@@ -1,61 +1,33 @@
---[[
-    Where the filler goes on a car's flank. /filler_autofit measures the flank (engine/client/probe.lua)
-    and this picks the spot and says how the bezel sits on it. Pure maths, no natives; the tests are in
-    tests/siphon.lua and tests/probe.lua.
-
-    GTA's cars have no fuel door to find, so the filler goes on plain paint where a filler usually
-    is. Without a petroltank bone, a wide map of the whole rear quarter (a DoorMap grid,
-    minigames/lockpick/client/doormap.lua, samples about 5 cm apart, with the doors and the glass
-    off) says where that is on this body: FillerMap.place. A lorry's bone is on its side tank, but
-    can be at its end or inside it: a wide map along the tank says where its face is, and the
-    filler goes in its middle (FillerMap.nearest, opts.middle). A coarse map round the place
-    (samples a few centimetres apart) says where the paint is whole and smooth over the bezel's
-    size. A close look at the best of those spots (a disc of samples a few millimetres apart) says
-    what the bezel rests on.
-
-    Flank space as in the probe: u along the car, v up, h out of the flank. A sample with h nil is
-    missing: s.hole (nothing there: a gap, the wheel arch, glass) or s.blocked (something in the way).
-
-        local place = FillerMap.place(wide, wheel)                       -- { u, v, h, target, archTop, panelTop, ... }
-        local place = FillerMap.nearest(wide, bone, { middle = true })   -- { u, v, h, target, tank, ... }: on what the bone is on
-        local spots = FillerMap.spots(coarse, anchor)                    -- best first: { u, v, distance, rough }
-        local height = FillerMap.surface(coarse.samples, spot, 0.09)     -- the paint round a spot: height(u, v)
-        local disc, new = FillerMap.disc(cache, anchor, spot, radius, step) -- the samples under the bezel; new: not measured yet
-        local verdict = FillerMap.judge(disc, spot, radius)              -- { ok, seat, why, rimGap, rimOff, rimHoles, ... }
-]]
+-- Flank space as in the probe: u along the car, v up, h out of the flank.
+-- h nil is missing: s.hole (a gap, the wheel arch, glass) or s.blocked (something in the way).
 
 FillerMap = {}
 
-local TURN = math.atan(0.5) -- the disc's rows run at this angle: a seam along or up the car crosses each row somewhere else
-local RIM = 0.012           -- the bezel's outer ring this wide: a gap shows only there, under the rest it's hidden
-local RING_IN = 0.0015      -- a ring of samples this far in from the rim,
-local RING_STEP = 0.0025    -- this far apart: a panel gap running out from under the bezel can't slip between them
-local CLEAR = 0.008         -- the lattice inside the ring keeps this far from it, so its markers and the ring's can go in one look
-local SEAM = 0.0012         -- under the rim, this far off the paint's own smooth curve is something else (a lip, a body line, a seam)
-local ROOM_STEP = 0.01      -- with room round the bezel: a ring of samples that far out, this far apart (an opening, glass, a flare can't slip between)
+local TURN = math.atan(0.5) -- rows at this angle: a seam along or up the car crosses each row somewhere else
+local RIM = 0.012           -- a gap shows only under the rim; under the rest it's hidden
+local RING_IN = 0.0015      -- metres in from the rim
+local RING_STEP = 0.0025    -- so a panel gap running out from under the bezel can't slip between
+local CLEAR = 0.008         -- so its markers and the ring's can go in one look
+local SEAM = 0.0012         -- metres off the paint's own curve under the rim: a lip, a body line, a seam
+local ROOM_STEP = 0.01      -- an opening, glass or a flare can't slip between
 
--- FillerMap.place: what counts as the body's skin and where a filler usually is (what the hand fits show).
-local SEED = 0.05           -- the skin grows from the outermost paint of columns this close to the flank's usual level
-local LEAN = 0.8            -- to neighbours no deeper or prouder than this much of the spacing (under 40 degrees),
-local CLIMB, BEND = 1.7, 0.012 -- or up to this much (60 degrees) where the surface goes on as it was going (within this)
-local STEEP = 1.19          -- going up the panel, the skin leaning in more than this (50 degrees) ends it: over the shoulder
-local GAP = 0.25            -- the wheel arch's top: the first skin this close over the tyre,
-local LIFTED = 0.60         -- or this close on a lifted body (none that close), with a panel over it the filler fits on
--- Where the hand fits are (36 cars fitted by hand): over the back of the wheel arch, never in front
--- of 0.4 tyre radii behind the wheel's middle, some well behind the arch (SUVs, pickups); at a
--- steady height over the arch's top, lower on a short panel; never over the panel's top, never
--- facing the ground.
-local BEHIND = 0.9          -- the filler's middle this many tyre radii behind the wheel's middle
-local FORWARD = 0.4         -- and never less than this
-local OVER_ARCH = 0.15      -- this far over the top of the wheel arch,
-local UNDER_TOP = 0.085     -- but at least this far under the top of the panel
-local AHEAD, BACK, UP = 0.12, 0.25, 0.035 -- moving it this far forward, back, or up or down costs the same (how far the hand fits are from there each way)
+local SEED = 0.05           -- metres: the skin grows from the outermost paint of columns this close to the usual level
+local LEAN = 0.8            -- of the spacing (under 40 degrees)
+local CLIMB, BEND = 1.7, 0.012 -- 60 degrees where the surface goes on as it was going
+local STEEP = 1.19          -- 50 degrees: over the shoulder
+local GAP = 0.25            -- metres over the tyre: the wheel arch's top
+local LIFTED = 0.60         -- on a lifted body
+-- From where the 36 hand fits are.
+local BEHIND = 0.9          -- tyre radii behind the wheel's middle
+local FORWARD = 0.4         -- and never less
+local OVER_ARCH = 0.15      -- metres over the wheel arch's top
+local UNDER_TOP = 0.085     -- metres under the panel's top at least
+local AHEAD, BACK, UP = 0.12, 0.25, 0.035 -- each costs the same (how far the hand fits are from there each way)
 
--- FillerMap.nearest: round a petroltank bone off the car's middle (a lorry's side tank).
-local NEAR = 0.2            -- what the bone is on comes this close to it, along and up the flank,
-local PAST_BONE = 0.15      -- and isn't further into the car than this past it (the frame, the cab through a door opening are)
-local FLAT = 10.0           -- a millimetre off a plane under the bezel costs as much as a centimetre further from the bone
-local ROWS = 0.07           -- opts.middle: the tank's ends, in the rows this close to the height of the place nearest the bone
+local NEAR = 0.2            -- metres along and up the flank
+local PAST_BONE = 0.15      -- metres past it (the frame, the cab through a door opening are further)
+local FLAT = 10.0           -- a mm off a plane under the bezel costs as much as a cm further from the bone
+local ROWS = 0.07           -- metres from the height of the place nearest the bone
 
 local function median(list)
     if #list == 0 then return end
@@ -65,8 +37,7 @@ local function median(list)
     return (list[n // 2] + list[n // 2 + 1]) * 0.5
 end
 
----How far the rim of a bezel of `radius` at c lifts off the paint where it curves away the most
----(the bezel rests on the middle of a bulge): from a quadratic through `samples`. nil if too few.
+-- The bezel rests on the middle of a bulge. nil if too few samples.
 local function lift(samples, c, radius)
     if #samples < 10 then return end
     local coef = DoorMap.leastSquares(samples, function(u, v)
@@ -79,9 +50,7 @@ local function lift(samples, c, radius)
     return math.max(0.0, -most) * radius * radius * 0.5
 end
 
----Grows a piece of skin over a wide map from `queue` (samples in it already: isIn(s)) to the samples
----next to it, as long as the surface carries on (see FillerMap.place; `steep`: also up a steep
----panel, where it goes on as it was going). add(s) puts a sample in it; skip(s) ones never go in.
+-- add(s) puts a sample in, skip(s) never go in. steep: also up a steep panel where it goes on as it was going.
 local function grow(map, queue, isIn, add, skip, steep)
     local step, at = map.step, map.at
     local carry = math.max(0.02, step * LEAN)
@@ -114,8 +83,7 @@ local function grow(map, queue, isIn, add, skip, steep)
                 end
             end
         end
-        -- Again from all of it: a sample in line with skin behind joins once that is skin, whichever
-        -- way the growth got there.
+        -- Again from all of it, so a sample in line with skin joins whichever way the growth got there.
         queue = {}
         if grew then
             for _, s in ipairs(map.samples) do
@@ -125,9 +93,7 @@ local function grow(map, queue, isIn, add, skip, steep)
     until not grew
 end
 
----The best of `fitting` (sorted, best first), with the next best elsewhere (opts.apart from it and
----each other, opts.others of them) as best.others: a map this coarse can't see a tight curve or a
----body line, the close look can, and then the filler tries there.
+-- A map this coarse can't see a tight curve or a body line; the close look can, and then tries the others.
 local function withOthers(fitting, opts)
     local best = fitting[1]
     best.others = {}
@@ -143,17 +109,9 @@ local function withOthers(fitting, opts)
     return best
 end
 
----Where the filler goes on this body, from a wide map of the rear quarter (a DoorMap grid: s.i, s.j,
----s.gu, s.gv where aimed; s.u, s.v, s.h where measured; s.du, s.dv: how far its line of sight
----drifts along the flank per metre in, if it isn't square). The bezel and opts.room round it have
----to be on the body's skin, all one smooth surface (within opts.rough of a plane) and not tilted or
----turned more than the filler may be: not on the tyre, the wheel arch or its lip, a door or window
----opening or the cabin seen through it, a crease or over the shoulder, nor facing the ground more
----than opts.maxDown. Of those places the one nearest where a filler usually is: over the back of the
----wheel arch, 15 cm over it (8.5 cm or more under the panel's top, never over it); if not there,
----further back sooner than further forward, and never in front of 0.4 tyre radii behind the wheel's
----middle. Sets s.skin on the samples.
----@param map table the wide map, measured
+-- Not on the tyre, the arch or its lip, a door or window opening, a crease or over the shoulder.
+-- Nearest where a filler usually is: over the back of the arch, 15 cm over it, further back sooner than forward.
+---@param map table
 ---@param wheel { u: number, v: number, r: number } the rear wheel's middle and its tyre's radius
 ---@param opts? { bezel?: number, room?: number, rough?: number, maxTilt?: number, maxTurn?: number, maxDown?: number, rearmost?: number }
 ---@return table? place { u, v, h, plane, cost, fits, target = { u, v }, archTop, arch, panelTop }, or nil and why (arch: 'lifted' or 'guessed' if not the usual)
@@ -168,13 +126,8 @@ function FillerMap.place(map, wheel, opts)
     local maxDown = math.tan(math.rad(opts.maxDown or opts.maxTilt or 45.0))
     local tyreTop = wheel.v + wheel.r
 
-    -- The skin: the body's outside, all one surface. It grows from the outermost paint in each
-    -- column (from the wheel's upper half up: the sill and the bumper stick out on their own) to
-    -- the samples next to it, as long as the surface carries on: the tyre, the wheel well, a door
-    -- or window opening and the cabin are a step in from it, and the tail wraps round too steeply.
-    -- On a steep panel (a supercar's quarter leaning in at 45 degrees) each row is more than that
-    -- in from the last, so it also carries on where the surface goes on as it was going: in line
-    -- with the skin behind, or with the sample past the next one.
+    -- The tyre, wheel well, door or window openings and the cabin are a step in from the skin. On a steep panel
+    -- each row is more than that in from the last, so it also carries on in line with the skin behind.
     -- The tyre is never skin, however near the paint it is (or however far in the sill tucks).
     local function tyre(s)
         local u, v = s.h and s.u or s.gu, s.h and s.v or s.gv
@@ -203,20 +156,14 @@ function FillerMap.place(map, wheel, opts)
     end
     grow(map, queue, function(s) return s.skin end, function(s) s.skin = true end, tyre, true)
 
-    -- Where each sample is on the flank: a skin sample where it was measured, anything else where
-    -- its line of sight crosses the skin's usual depth (seen at an angle, a door opening's far side
-    -- is well off its edge).
+    -- Anything that isn't skin is placed where its line of sight crosses the skin's usual depth.
     local function where(s)
         if s.skin then return s.u, s.v end
         local depth = -math.max(typical, s.h or typical)
         return s.gu + (s.du or 0.0) * depth, s.gv + (s.dv or 0.0) * depth
     end
 
-    -- The top of the wheel arch: the first skin over the tyre in the columns by the wheel's middle
-    -- (the gap over the tyre and the wheel well are deeper; the arch's lip is skin). On a lifted
-    -- body the gap is far taller: if no column has skin within GAP over the tyre, the first skin
-    -- within LIFTED, where most of them have it with a panel over it the filler fits on (a bed's
-    -- side); else a guess.
+    -- On a lifted body the gap over the tyre is far taller, so LIFTED is tried, else a guess.
     local tops, lifted, by = {}, {}, 0
     for i = 1, columns do
         local column = at[i]
@@ -245,11 +192,7 @@ function FillerMap.place(map, wheel, opts)
     if not archTop and #lifted > 0 and #lifted * 2 >= by then archTop, arch = median(lifted), 'lifted' end
     if not archTop then archTop, arch = tyreTop + 0.06, 'guessed' end
 
-    -- The top of the panel near where the filler's middle would be along the car: up from the arch's
-    -- height as long as it's skin and doesn't lean in over 50 degrees (into a window opening, over
-    -- the shoulder; measured where the samples are, not where they were aimed). Only columns where
-    -- the panel is tall enough for the bezel and its room: over a door opening there's just the
-    -- arch's lip.
+    -- Only columns where the panel is tall enough for the bezel and its room: over a door opening there's just the lip.
     local targetU = wheel.u - BEHIND * wheel.r
     local panels = {}
     for i = 1, columns do
@@ -267,9 +210,7 @@ function FillerMap.place(map, wheel, opts)
     for k = 1, math.min(5, #panels) do near[k] = panels[k].top end
     local panelTop = median(near) or (archTop + 0.35)
 
-    -- Every place the bezel and its room fit, a centimetre and a half apart, its middle no higher
-    -- than the panel's top; the nearest to the target. Skin's edge is somewhere between a skin
-    -- sample and the next one, so anything else has to be half a step further off as well.
+    -- Skin's edge is somewhere between a skin sample and the next, so anything else has to be half a step further off.
     local need = clear + step * 0.5
     local target = { u = targetU, v = math.max(math.min(panelTop - UNDER_TOP, archTop + OVER_ARCH), archTop + need) }
     local u0, v0 = at[1][1].gu, at[1][1].gv
@@ -293,7 +234,7 @@ function FillerMap.place(map, wheel, opts)
                 if not whole then break end
             end
             local plane = whole and #under >= 5 and DoorMap.fitPlane(under)
-            -- (plane.c > 0: it leans out going up, facing the ground)
+            -- plane.c > 0: it leans out going up, facing the ground
             if plane and plane.worst <= rough and -plane.c <= maxTilt and plane.c <= maxDown and math.abs(plane.b) <= maxTurn then
                 fitting[#fitting + 1] = {
                     u = cu, v = cv, h = plane.a + plane.b * cu + plane.c * cv, plane = plane,
@@ -305,29 +246,14 @@ function FillerMap.place(map, wheel, opts)
     if #fitting == 0 then return nil, 'no plain panel on the rear quarter big enough for the filler' end
     table.sort(fitting, function(a, b) return a.cost < b.cost end)
 
-    -- The best, and the next best elsewhere.
     local best = withOthers(fitting, opts)
     best.fits, best.target, best.archTop, best.arch, best.panelTop = #fitting, target, archTop, arch, panelTop
     return best
 end
 
----The place nearest `anchor` (a petroltank bone off the car's middle: { u, v, h }, h out of the
----flank as the map's) on what the bone is on, where the bezel and opts.room round it fit on one
----smooth surface, from a wide map round it (as FillerMap.place takes). A lorry's bone is on its side
----tank, at its end or inside it; the tank is a curve (round, or flat faces) with straps and a step on
----it, and the frame, a battery box, a wheel and the cab are round it. So each surface with paint
----within NEAR of the bone (along and up the flank) and no more than PAST_BONE further into the car
----than it is grown, the one passing nearest the bone first, as the skin is but only where it
----carries on gently (up a steep part, an edge seen end on could join the tank to the cab). The
----filler fits where the bezel and its room are all on one, within opts.rough of a smooth curve (a
----quadratic: a round tank is no plane), not tilted or turned more than the filler may be and not
----facing the ground more than opts.maxDown. The place nearest the bone by way of its
----surface wins (from the bone to where that passes nearest it, and on to the place: a step on the
----tank is too small, the front tyre's wall further off), and a millimetre off a plane under the
----bezel costs as much as a centimetre further (FLAT). With opts.middle (a side tank: the hand fits
----are well along it from the bone, at its end), the place nearest the middle of that surface along
----the car at the height of the one nearest the bone (FillerMap.run) instead. Sets s.skin on that surface.
----@param map table the wide map, measured
+-- A lorry's bone is on its side tank, at its end or inside it; the tank is a curve with straps and a step on it.
+-- With opts.middle the place nearest the middle of that surface along the car wins (FillerMap.run).
+---@param map table
 ---@param anchor { u: number, v: number, h: number }
 ---@param opts? { bezel?: number, room?: number, rough?: number, maxTilt?: number, maxTurn?: number, maxDown?: number, apart?: number, others?: number, middle?: boolean }
 ---@return table? place { u, v, h, cost, fits, away, target = { u, v }, tank, others }, or nil and why (away: how far the bone is from that surface; tank: FillerMap.run's, with opts.middle)
@@ -341,7 +267,6 @@ function FillerMap.nearest(map, anchor, opts)
     local maxTurn = math.tan(math.rad(opts.maxTurn or 35.0))
     local maxDown = math.tan(math.rad(opts.maxDown or opts.maxTilt or 45.0))
 
-    -- What the bone may be on: paint near it, not well behind it. Nearest the bone first.
     local near = {}
     for _, s in ipairs(map.samples) do
         s.skin, s.piece = false, nil
@@ -355,8 +280,7 @@ function FillerMap.nearest(map, anchor, opts)
     end
     table.sort(near, function(a, b) return a.away < b.away end)
 
-    -- Each surface is grown from the nearest of them not on one yet: a step on the tank is one, its
-    -- face another (the step stands out more than the skin carries on over).
+    -- A step on the tank is one surface, its face another.
     local pieces = {}
     for _, seed in ipairs(near) do
         if not seed.piece then
@@ -371,8 +295,7 @@ function FillerMap.nearest(map, anchor, opts)
         end
     end
 
-    -- Every place the bezel and its room fit on one, a centimetre and a half apart. As in
-    -- FillerMap.place, anything that isn't on it is where its line of sight crosses its usual depth.
+    -- As in FillerMap.place, anything not on it is where its line of sight crosses its usual depth.
     local need = clear + step * 0.5
     local span = math.ceil((need + 0.05) / step) + 1
     local u0, v0 = at[1][1].gu, at[1][1].gv
@@ -422,9 +345,9 @@ function FillerMap.nearest(map, anchor, opts)
                         worst = math.max(worst, math.abs(s.h - h))
                         if (s.u - cu) ^ 2 + (s.v - cv) ^ 2 <= (need - (opts.room or 0.02)) ^ 2 then bezel[#bezel + 1] = s end
                     end
-                    -- Its slopes at the middle: along the car (turned), up it (leaning out going up: facing the ground).
+                    -- leaning out going up: facing the ground
                     local turn, lean = coef[2], coef[3]
-                    -- How flat it is under the bezel itself: on a tank of flat faces, a face's middle beats the corner between two.
+                    -- On a tank of flat faces, a face's middle beats the corner between two.
                     local plane = DoorMap.fitPlane(bezel)
                     if plane and worst <= rough and math.abs(turn) <= maxTurn and -lean <= maxTilt and lean <= maxDown then
                         fitting[#fitting + 1] = {
@@ -438,8 +361,6 @@ function FillerMap.nearest(map, anchor, opts)
         return fitting
     end
 
-    -- The best place on each, and of those the one nearest the bone by way of its surface: from the
-    -- bone to where that passes nearest it, and on to the place.
     local best, on
     for k, piece in ipairs(pieces) do
         local fitting = places(k, piece)
@@ -455,7 +376,6 @@ function FillerMap.nearest(map, anchor, opts)
     if opts.middle then
         tank = FillerMap.run(map, on, best.fitting[1])
         if tank then
-            -- On the tank's face, in its middle along the car, as high as the place nearest the bone.
             target = { u = tank.middle, v = best.fitting[1].v }
             for _, c in ipairs(best.fitting) do
                 c.cost = math.sqrt((c.u - target.u) ^ 2 + (c.v - target.v) ^ 2) + c.flat * FLAT
@@ -463,18 +383,14 @@ function FillerMap.nearest(map, anchor, opts)
             table.sort(best.fitting, function(a, b) return a.cost < b.cost end)
         end
     end
-    local place = withOthers(best.fitting, opts) -- the next best on the same surface
+    local place = withOthers(best.fitting, opts)
     for _, s in ipairs(map.samples) do s.skin = s.piece == on end
     place.fits, place.away, place.target, place.tank = #best.fitting, best.away, target, tank
     return place
 end
 
----How far surface `k` of a wide map (s.piece, as FillerMap.nearest grows them) runs along the car
----round `at`: in each row within ROWS of its height, from its sample there nearest `at` (where it
----was measured: seen at an angle, a line of sight lands off its grid) each way until the surface
----ends (one sample off it doesn't end it: a strap, a bolt). The middle values: { lo, hi, middle,
----rows, openLo, openHi } (open: it ran to the map's end that way, and may go on), or nil if no row
----has it there.
+-- Returns { lo, hi, middle, rows, openLo, openHi } (open: ran to the map's end that way), or nil if no row has it.
+-- One sample off the surface doesn't end it: a strap, a bolt.
 function FillerMap.run(map, k, at)
     local step, cols = map.step, map.at
     local columns = #cols
@@ -504,13 +420,7 @@ function FillerMap.run(map, k, at)
     return { lo = lo, hi = hi, middle = (lo + hi) * 0.5, rows = rows, openLo = openLo * 2 > rows, openHi = openHi * 2 > rows }
 end
 
----Spots for the filler's middle within opts.halfU / halfV of `anchor`, best first. Every sample
----under the bezel (`radius`) and most of opts.room round it has paint, the paint under it is within
----`rough` of a plane and tilted / turned no more than the filler may be; the closer to the anchor
----and the flatter, the better, and worse for each sample a little further out without paint (an
----opening's edge may be closer than it) or off the bezel's plane (the arch's lip, a door's edge).
----With opts.uneven: none where the paint curves so much the bezel's rim would lift more than that
----off it (a fender's bulge). At most opts.count, none within opts.apart of a better one.
+-- Worse for each sample a little further out without paint or off the bezel's plane (the arch's lip, a door's edge).
 ---@param map table a DoorMap grid, measured
 ---@param anchor { u: number, v: number }
 ---@param opts? { halfU?: number, halfV?: number, step?: number, radius?: number, room?: number, rough?: number, weight?: number, count?: number, apart?: number, maxTilt?: number, maxTurn?: number, uneven?: number }
@@ -524,8 +434,7 @@ function FillerMap.spots(map, anchor, opts)
     local maxTurn = math.tan(math.rad(opts.maxTurn or 35.0))
     local reach = radius + map.step * 0.5 -- a sample this close stands for paint that may be under the rim
     local around = reach + (opts.room or 0.0)
-    -- No opening this close: within the room for sure (a slanting line of sight may find glass or
-    -- an opening a little past where it was aimed). Closer looks see the rest.
+    -- A slanting line of sight may find glass or an opening a little past where it was aimed.
     local keep = math.max(radius, radius + (opts.room or 0.0) - map.step * 0.5)
 
     local found = {}
@@ -575,10 +484,7 @@ function FillerMap.spots(map, anchor, opts)
     return out
 end
 
----The paint round c: a quadratic through the measured samples within `radius` of it (a plane if
----there are only a few), refitted without what's far off it (a seam, a badge): further than
----`floor` (default 1.5 mm) and three times the typical. Returns height(u, v), or nil if too
----little was measured there.
+-- Refitted without what's far off it (a seam, a badge). floor: metres, default 1.5 mm. nil if too little was measured.
 function FillerMap.surface(samples, c, radius, floor)
     local near = {}
     for _, s in ipairs(samples) do
@@ -617,12 +523,8 @@ function FillerMap.surface(samples, c, radius, floor)
     return function(u, v) return value(coef, u, v) end
 end
 
----The samples under a bezel of `radius` at c: a close ring just inside the rim and inside it a
----lattice `step` apart, laid from `origin` (the same for every spot on a flank, so spots close
----together share samples; `cache` keeps them by their place on it). With `room`: a ring of samples
----that far round the rim too (s.room), where there has to be plain paint. Returns every sample, and
----the ones not measured yet. Each sample: { u, v, gu, gv } (gu, gv: where it was aimed; u, v move
----to the hit).
+-- The lattice is laid from origin, the same on a flank, so spots close together share samples (cache).
+-- Returns every sample and the ones not measured yet; gu, gv: where it was aimed.
 function FillerMap.disc(cache, origin, c, radius, step, room)
     local cu, su = math.cos(TURN), math.sin(TURN)
     local du, dv = c.u - origin.u, c.v - origin.v
@@ -632,8 +534,7 @@ function FillerMap.disc(cache, origin, c, radius, step, room)
     local r = radius - RING_IN
     local inner = r - CLEAR
 
-    -- The ring first: the probe packs its markers into fewer looks that way. A multiple of 12
-    -- samples, so every third or fourth one (one look's worth) comes round evenly.
+    -- Ring first: the probe packs its markers into fewer looks that way; a multiple of 12 so looks come round evenly.
     local count = 12 * math.ceil(2.0 * math.pi * r / RING_STEP / 12)
     for k = 1, count do
         local a = (k - 0.5) * 2.0 * math.pi / count
@@ -673,15 +574,8 @@ function FillerMap.disc(cache, origin, c, radius, step, room)
     return all, new
 end
 
----How a bezel of `radius` at c would sit on the measured disc (DoorMap.seat: resting on the
----paint's high points). Only its rim shows how it sits: it's ok when nothing stands out under it,
----and under its rim the paint is there (but for opts.holes, a share), plain (its own smooth curve)
----and nowhere more than opts.uneven from the rim; round it (the disc's room ring) there's paint.
----Under the rest of it, seams and dips are hidden. Otherwise `why` says what's wrong, and `bad`
----where ({ u, v, kind }): kind 'blocked' (something stands out), 'hole' (no paint under the rim or
----round it), 'line' (off the paint's own curve: a lip, a body line, a seam; inside the rim too,
----where it's hidden but runs on) or 'gap' (the rim lifts off a curve). score: lower is better, to
----pick the least bad when none is ok.
+-- Only the rim shows how it sits: under the rest, seams and dips are hidden.
+-- bad: { u, v, kind } with kind 'blocked', 'hole', 'line' or 'gap'. score: lower is better.
 ---@return { ok: boolean, seat: table?, why: string?, score: number, holes: number, rimHoles: number, rimOff: number, rimGap: number, blocked: integer, roomOut: number, bad: table[] }
 function FillerMap.judge(disc, c, radius, opts)
     opts = opts or {}

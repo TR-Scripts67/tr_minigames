@@ -16,4 +16,5 @@ Lockpick.rig = {
     leverPivot = vec3(-0.0018, -0.0252, 0.0000), -- tr_lp_lishi_lever swings around Z here, outward is -
     depthStep = 0.0011, -- lift between two depth lines on the plate
     depths = 4,
+    ignition = { model = 'tr_lp_ign_yoke', base = 0.0072 }, -- every bike's housing round the same plug; base: where its back rests on the bike (+Y)
 }

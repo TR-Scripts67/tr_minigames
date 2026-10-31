@@ -1,13 +1,5 @@
---[[
-    Cars for the dev fitting tools (the lockpick's fitter and autofit).
-
-        local list = DevCars.models(skipClass, function(model) return true end)  -- sorted
-        local vehicle = DevCars.spawn('sultan', coords, heading)                 -- local, frozen
-]]
-
 DevCars = {}
 
----Car models, sorted, not of a class in `skipClass` (GetVehicleClassFromName), for which keep(model) is true.
 function DevCars.models(skipClass, keep)
     local list = {}
     for _, name in ipairs(GetAllVehicleModels()) do
@@ -21,7 +13,7 @@ function DevCars.models(skipClass, keep)
     return list
 end
 
----A local, frozen, locked copy of the car at `at`. nil if the model doesn't load.
+-- nil if the model doesn't load
 function DevCars.spawn(model, at, heading)
     local hash = joaat(model)
     if not IsModelInCdimage(hash) or not IsModelAVehicle(hash) then return end

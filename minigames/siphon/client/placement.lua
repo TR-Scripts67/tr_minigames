@@ -1,27 +1,13 @@
---[[
-    Where a ped siphons a car: the filler, the paint over it, which clip fits its height, and where the
-    ped stands so the clip's hands are at the filler (the hoses go in where the clip has them).
-
-        local place = Siphon.placement(vehicle, ped)
-        -- place.spot (ped root), place.heading, place.clip, place.paint, place.normal, place.ground, place.source
-        local offset, pitch, yaw = Siphon.frame(vehicle, place)   -- filler space on the car (Scene.new)
-
-    A car with a fit (made with /filler_fitall or /filler_autofit, client/fits.lua) uses it. Other cars
-    with a petroltank bone use that, the rest a guess on the body's flank above a rear wheel. Both lie
-    inside the body, so a ray from outside finds the paint.
-]]
+-- Without a fit: the petroltank bone, else a guess above a rear wheel. Both lie inside the body,
+-- so a ray from outside finds the paint.
 
 Siphon = Siphon or {}
 
--- Fits by model: where filler space sits on the car, { x, y, z, pitch, yaw } in vehicle space (as
--- Scene.new takes it), `auto` if /filler_autofit measured it, `check` if it wasn't sure, `both` for a
--- car without a petroltank bone: measured on one flank, mirrored to the side the player stands. live: being
--- tuned right now (/filler_fitall), until the resource restarts. saved: kept by the server in
--- minigames/siphon/fits.json. Then Config.siphon.vehicleFits.
+-- A fit is { x, y, z, pitch, yaw } in vehicle space; auto: measured, check: not sure, both: mirrored to the player's side.
+-- live: being tuned until a restart. saved: from minigames/siphon/fits.json. Then Config.siphon.vehicleFits.
 Siphon.liveFits = Siphon.liveFits or {}
 Siphon.savedFits = Siphon.savedFits or {}
 
----Spawn name of the vehicle's model, the key for fits.
 function Siphon.modelName(vehicle)
     return GetEntityArchetypeName(vehicle):lower()
 end
@@ -34,13 +20,12 @@ function Siphon.fit(model)
     if fits and fits[model] then return fits[model], 'config' end
 end
 
----Filler space's axes (in vehicle space) for a fit: +Y into the car.
+-- +Y into the car
 function Siphon.fitAxes(fit)
     return Mat.mul(Mat.axis('z', fit.yaw), Mat.axis('x', fit.pitch))
 end
 
--- One clip every 5 cm of filler height (props/siphon/anim.py VARIANTS: blow_75 kneels for paint 0.75 m
--- above the ground ... blow_150 stands upright): the paint this high above the ground.
+-- One clip every 5 cm of paint height above the ground (props/siphon/anim.py VARIANTS).
 local CLIPS = {}
 for name, clip in pairs(Siphon.rig.clips) do CLIPS[#CLIPS + 1] = { name = name, height = clip.fillerHeight } end
 table.sort(CLIPS, function(a, b) return a.height < b.height end)
@@ -59,8 +44,7 @@ local function hitCar(a, b, vehicle, ignore)
     if (hit == true or hit == 1) and entity == vehicle then return pos, normal end   -- builds differ: 1 or true
 end
 
----The rear wheel on `side` (-1 left, 1 right) in vehicle space: { x, y, z, r }, r the tyre's radius.
----nil if the car has none.
+-- side: -1 left, 1 right. r is the tyre's radius. nil if the car has none.
 function Siphon.rearWheel(vehicle, side)
     local right = side > 0
     local wheel = GetEntityBoneIndexByName(vehicle, right and 'wheel_rr' or 'wheel_lr')
@@ -72,8 +56,6 @@ function Siphon.rearWheel(vehicle, side)
     return { x = w.x, y = w.y, z = w.z, r = radius }
 end
 
----The filler without a fit: a petroltank bone, or a guess off the rear wheel on the side `ped` is
----standing (or `side`: -1 left, 1 right).
 local function boneOrGuess(vehicle, ped, side)
     for _, name in ipairs({ 'petroltank', 'petroltank_l', 'petroltank_r' }) do
         local bone = GetEntityBoneIndexByName(vehicle, name)
@@ -91,9 +73,7 @@ local function boneOrGuess(vehicle, ped, side)
     local w = Siphon.rearWheel(vehicle, right and 1 or -1)
     if not w then return end
 
-    -- Fuel caps sit on the body's flank above the wheel arch, a little behind the wheel's middle. Rays
-    -- in from the side at a few heights find the flank: on low, wide cars (Adder) the body curves in
-    -- above the fender, so a fixed height would go over it and hit the engine cover.
+    -- On low, wide cars (Adder) the body curves in above the fender, so rays at a few heights find the flank.
     local radius = w.r
     local s, y = right and 1 or -1, w.y - radius * 0.5
     local preferred = w.z + radius + 0.2
@@ -111,7 +91,7 @@ local function boneOrGuess(vehicle, ped, side)
 
     local height = preferred
     if #outs > 0 then
-        -- The highest spot, up to the preferred height, that is still on the flank (within 3 cm of the widest).
+        -- The highest spot up to the preferred height that's still on the flank (within 3 cm of the widest).
         height = nil
         for _, h in ipairs(outs) do
             if h.out >= widest - 0.03 and h.z <= preferred and (not height or h.z > height) then height = h.z end
@@ -123,8 +103,6 @@ local function boneOrGuess(vehicle, ped, side)
     return GetOffsetFromEntityInWorldCoords(vehicle, w.x, y, height), wheelName .. ' (guess)'
 end
 
----The filler in world space and what it came from: the model's fit, a petroltank bone, or a guess
----off the rear wheel on the side `ped` is standing.
 ---@return vector3? filler
 ---@return string? source
 ---@return table? fit
@@ -140,14 +118,12 @@ function Siphon.fillerOf(vehicle, ped)
     return boneOrGuess(vehicle, ped)
 end
 
----Where the ped goes to siphon `vehicle`, or nil and a reason ('no_filler').
 ---@return table? place { spot, heading, clip, paint, normal, ground, outward, filler, source, onPaint, side }
 ---@return string? reason
 function Siphon.placement(vehicle, ped)
     local filler, source, fit = Siphon.fillerOf(vehicle, ped)
     if not filler then return nil, 'no_filler' end
 
-    -- Face the side of the car the filler is on, and find the paint there (a fit is on it already).
     local side = GetOffsetFromEntityGivenWorldCoords(vehicle, filler.x, filler.y, filler.z).x >= 0 and 1 or -1
     local carFwd = GetEntityForwardVector(vehicle)
     local outward = vec3(carFwd.y, -carFwd.x, 0.0) * side
@@ -162,12 +138,11 @@ function Siphon.placement(vehicle, ped)
     paint, normal = paint or filler, normal or outward
 
     local heading = (GetEntityHeading(vehicle) + 90.0 * side) % 360.0
-    local beside = paint + outward * 0.1 -- the ground just outside the car, under the filler
+    local beside = paint + outward * 0.1
     local found, ground = GetGroundZFor_3dCoord(beside.x, beside.y, beside.z + 1.0, false)
     ground = found and ground or filler.z - 0.8
 
-    -- Every clip has the paint at the same spot ahead of the ped (rig.lua clips.*.filler, ped space:
-    -- +X right, +Y forward); the ped stands so it is on the paint.
+    -- Every clip has the paint at the same spot ahead of the ped (rig.lua clips.*.filler), so the ped stands with it on the paint.
     local clip = Siphon.clipFor(paint.z - ground)
     local at = Siphon.rig.clips[clip].filler
     local rad = math.rad(heading)
@@ -193,11 +168,9 @@ function Siphon.placement(vehicle, ped)
     }
 end
 
-local MAX_YAW, MAX_PITCH = 25.0, 10.0 -- degrees the filler may turn from square to the car's side with the paint
+local MAX_YAW, MAX_PITCH = 25.0, 10.0 -- degrees from square to the car's side
 
----Filler space on the car, for Scene.new(vehicle, offset, pitch, yaw): its origin on the paint at the
----filler, +Y into the car along the paint's normal (within a few degrees of square to the car's
----side, so an odd hit can't turn it away), +X to the right of a player facing it.
+-- Kept within a few degrees of square to the car's side, so an odd hit can't turn it away.
 ---@return vector3 offset, number pitch, number yaw
 function Siphon.frame(vehicle, place)
     local fit = place.fit
@@ -214,8 +187,7 @@ function Siphon.frame(vehicle, place)
     return offset, pitch, yaw
 end
 
----Where filler space would sit on `vehicle` without a fit, as a fit: on the petroltank bone, or the
----guess on `side` (-1 left, 1 right). nil if the car has neither.
+-- side: -1 left, 1 right. nil if the car has neither a bone nor a wheel.
 function Siphon.guessFit(vehicle, side)
     local filler = boneOrGuess(vehicle, nil, side)
     if not filler then return end
@@ -227,7 +199,6 @@ function Siphon.guessFit(vehicle, side)
     return { x = offset.x, y = offset.y, z = offset.z, pitch = pitch, yaw = yaw }
 end
 
----Is `ped` at a filler of `vehicle` (near enough to start)?
 ---@param reach number metres from the spot the ped would siphon from
 function Siphon.atFiller(vehicle, ped, reach)
     local filler = Siphon.fillerOf(vehicle, ped)

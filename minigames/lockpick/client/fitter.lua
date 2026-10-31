@@ -1,26 +1,4 @@
---[[
-    Fits the lock to every car, one after another (dev mode; saving needs an admin).
-
-        /lockpick_fitall           every car model that has no saved fit yet, A to Z
-        /lockpick_fitall all       every car model, saved or not
-        /lockpick_fitall review    the fits /lockpick_autofit wasn't sure about
-        /lockpick_fitall sultan    just this one
-
-    Each car is spawned where you stand (only on your screen) with the Lishi in its driver's door
-    lock. Move the lock until it sits right; Enter saves it on the server (minigames/lockpick/fits.json,
-    every player gets it at once) and brings up the next car.
-
-        Arrows      along the door (left / right, up / down)
-        Q / E       out of / into the door
-        Scroll      tilt up / down (also numpad 8 / 5)
-        Z / X       tilt left / right (also numpad 4 / 6)
-        Shift       1 mm a press instead of 5 mm
-        C           wide view: the lock against the whole door
-        R           undo your changes (back to the saved fit, or the default spot)
-        Enter       save, next car
-        Backspace   skip this car without saving
-        Esc         stop
-]]
+-- /lockpick_fitall [all | review | bikes [all] | <model>] (dev mode; saving needs an admin)
 
 local cfg = Config.lockpick
 
@@ -28,45 +6,50 @@ if not cfg.enabled or not cfg.devMode then return end
 
 local Rig = Lockpick.rig
 local DOOR = 'dside_f'
-local LEVER_OPEN, SHUTTER_OPEN = 52.0, 88.0 -- the lever out, the shutter pushed in: as when picking
-local WIDE = 4.0                            -- wide view: the camera this many times further out
+local LEVER_OPEN, SHUTTER_OPEN = 52.0, 88.0 -- as when picking
+local WIDE = 4.0                            -- times further out
 local KEY = { save = 191, skip = 194, stop = 200, wide = 26, reset = 45 }
 
--- Left out of the fitting runs (asking for one model by name still fits it). No door lock:
--- motorcycles (8), cycles (13), boats (14), helicopters (15), planes (16), trains (21). Not worth
--- fitting: industrial (10), utility (11), service (17), emergency (18), military (19),
--- commercial (20) and open wheel (22).
+-- No door lock, or not worth fitting. Asking for a model by name still fits it.
 local SKIP_CLASS = {
     [8] = true, [13] = true, [14] = true, [15] = true, [16] = true, [21] = true,
     [10] = true, [11] = true, [17] = true, [18] = true, [19] = true, [20] = true, [22] = true,
 }
 
 local running = false
-local scene   -- the lock and Lishi, moved from car to car
-local spawned -- the car on screen
-local home    -- where the player stood
+local scene
+local spawned
+local home
 
 local function say(text)
     print('[lockpick fit] ' .. text)
 end
 
--- Shared with autofit.lua.
 Lockpick.dev = Lockpick.dev or {}
 local Dev = Lockpick.dev
 
----Car models, sorted, for which keep(model, savedFit) is true.
 function Dev.carModels(keep)
     return DevCars.models(SKIP_CLASS, function(model) return keep(model, Lockpick.savedFits[model]) end)
 end
 
----Car models to fit: unfitted ones, 'all', 'review' (auto fits marked for a look) or one model.
-local function models(arg)
+local function bikeModels(keep)
+    local list = {}
+    for _, name in ipairs(GetAllVehicleModels()) do
+        local model = name:lower()
+        if Lockpick.isBikeModel(joaat(model)) and keep(model) then list[#list + 1] = model end
+    end
+    table.sort(list)
+    return list
+end
+
+-- arg: nil (not fitted yet), 'all', 'review', 'bikes' (then nil or 'all') or a model
+local function models(arg, more)
+    if arg == 'bikes' then return bikeModels(function(model) return more == 'all' or not Lockpick.savedFits[model] end) end
     if arg == 'review' then return Dev.carModels(function(_, saved) return saved and saved.check end) end
     if arg and arg ~= 'all' then return { arg:lower() } end
     return Dev.carModels(function(_, saved) return arg == 'all' or not saved end)
 end
 
----Removes the car and the tool and gives the player back.
 local function cleanup()
     TR.ui.hud.hide()
     if spawned and DoesEntityExist(spawned) then DeleteEntity(spawned) end
@@ -81,12 +64,10 @@ local function cleanup()
     FreezeEntityPosition(ped, false)
 end
 
----A local, frozen, locked copy of the car where the player stands.
 Dev.spawn = DevCars.spawn
 
----The lock and the Lishi as they sit while picking: lever out, shutter pushed in.
-function Dev.spawnTool(scene)
-    scene:spawn('bezel', 'tr_lp_bezel')
+function Dev.spawnTool(scene, housing)
+    scene:spawn('bezel', housing or 'tr_lp_bezel')
     scene:spawn('plug', 'tr_lp_plug')
     scene:spawn('shutter', 'tr_lp_shutter', Rig.shutterHinge, Mat.axis('x', SHUTTER_OPEN))
     scene:spawn('lishi', 'tr_lp_lishi')
@@ -95,13 +76,21 @@ function Dev.spawnTool(scene)
     scene:spawn('lever', 'tr_lp_lishi_lever', Rig.leverPivot - Mat.apply(swing, Rig.leverPivot), swing)
 end
 
-local function hud(model, index, total, wide)
-    local fit, source = Lockpick.fit(model)
+-- What saving keeps: a bike nobody moved yet keeps where its bones put the lock.
+local function shownFit(vehicle, model)
+    if Lockpick.isBike(vehicle) then
+        local fit, source = Lockpick.bikeFit(vehicle)
+        if fit then return fit, source end
+    end
+    return Lockpick.fit(model)
+end
+
+local function hud(vehicle, model, index, total, wide)
+    local fit, source = shownFit(vehicle, model)
     local function mm(v) return ('%d mm'):format(math.floor(v * 1000 + 0.5)) end
 
     local tools = { { label = model, progress = ('%d / %d'):format(index, total), active = true } }
     if fit.x then
-        -- Measured (or moved from measured): where it is in the car's space.
         tools[2] = { label = 'X', progress = mm(fit.x) }
         tools[3] = { label = 'Y', progress = mm(fit.y) }
         tools[4] = { label = 'Z', progress = mm(fit.z) }
@@ -132,13 +121,11 @@ local function hud(model, index, total, wide)
     })
 end
 
----Fits one car. Returns 'saved', 'skipped' or 'stop'.
-local function fitOne(scene, vehicle, model, index, total)
-    local cam = cfg.camera
+local function fitOne(scene, vehicle, model, door, cam, index, total)
     local wide = false
 
     local function place()
-        local offset, pitch, yaw = Lockpick.placement(vehicle, DOOR)
+        local offset, pitch, yaw = Lockpick.placement(vehicle, door)
         if offset then scene:setPlacement(offset, pitch, yaw) end
     end
 
@@ -162,9 +149,8 @@ local function fitOne(scene, vehicle, model, index, total)
             wide = not wide
             aim()
         elseif IsDisabledControlJustPressed(0, KEY.save) then
-            -- Saved by hand: no longer marked for a check.
             local fit = {}
-            for k, v in pairs(Lockpick.fit(model)) do fit[k] = v end
+            for k, v in pairs((shownFit(vehicle, model))) do fit[k] = v end
             fit.check = nil
             local ok, err = TR.callback.await('tr_minigames:lockpick:saveFit', model, fit)
             if ok then
@@ -184,14 +170,17 @@ local function fitOne(scene, vehicle, model, index, total)
 
         scene:update()
         scene:torch(cfg.torch or 0.6)
-        hud(model, index, total, wide)
+        hud(vehicle, model, index, total, wide)
         Wait(0)
     end
 end
 
-local function run(arg)
-    local list = models(arg)
-    if #list == 0 then return say('every car already has a saved fit (use /lockpick_fitall all to redo them)') end
+local function run(arg, more)
+    local list = models(arg, more)
+    if #list == 0 then
+        return say(arg == 'bikes' and 'every bike already has a saved fit (use /lockpick_fitall bikes all to redo them)'
+            or 'every car already has a saved fit (use /lockpick_fitall all to redo them)')
+    end
     say(('%d cars to fit'):format(#list))
 
     local ped = PlayerPedId()
@@ -212,22 +201,28 @@ local function run(arg)
             skipped = skipped + 1
         else
             local model = Lockpick.modelName(vehicle)
-            local offset, pitch, yaw = Lockpick.placement(vehicle, DOOR)
+            local door = Lockpick.isBike(vehicle) and 'bike' or DOOR
+            local offset, pitch, yaw = Lockpick.placement(vehicle, door)
 
             if not offset then
-                say(model .. ': no driver door handle or door bone, skipped')
+                say(model .. (door == 'bike' and ': no forks_u or handlebars bone, skipped' or ': no driver door handle or door bone, skipped'))
                 skipped = skipped + 1
             else
+                local housing, cam = 'tr_lp_bezel', cfg.camera
+                if door == 'bike' then housing, cam = Rig.ignition.model, Lockpick.bikeCamera() end
+
                 if not scene then
                     scene = Scene.new(vehicle, offset, pitch, yaw)
-                    Dev.spawnTool(scene)
-                    scene:createCamera(cfg.camera.pos, cfg.camera.target, cfg.camera.fov)
+                    Dev.spawnTool(scene, housing)
+                    scene:createCamera(cam.pos, cam.target, cam.fov)
                 else
                     scene.entity = vehicle
                     scene:setPlacement(offset, pitch, yaw)
+                    if scene:get('bezel').model ~= housing then scene:spawn('bezel', housing) end
+                    scene:moveCamera(cam.pos, cam.target)
                 end
 
-                local result = fitOne(scene, vehicle, model, index, #list)
+                local result = fitOne(scene, vehicle, model, door, cam, index, #list)
                 if result == 'saved' then saved = saved + 1 else skipped = skipped + 1 end
 
                 if result == 'stop' then
@@ -253,7 +248,7 @@ RegisterCommand('lockpick_fitall', function(_, args)
 
     running = true
     CreateThread(function()
-        local ok, err = pcall(run, args[1])
+        local ok, err = pcall(run, args[1], args[2])
         running = false
         if not ok then
             cleanup()

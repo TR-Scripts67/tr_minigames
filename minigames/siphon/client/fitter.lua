@@ -1,35 +1,5 @@
---[[
-    Fits the filler to every car, one after another (dev mode; saving needs an admin).
-
-        /filler_fitall           every car model that has no saved fit yet, A to Z
-        /filler_fitall all       every car model, saved or not
-        /filler_fitall review    the fits /filler_autofit wasn't sure about
-        /filler_fitall sultan    just this one
-
-    Each car is spawned where you stand (only on your screen) with the filler (bezel, flap and cap)
-    where the siphon would put it. Move it onto the car's own fuel door so the bezel sits flat on the
-    paint; Enter saves it on the server (minigames/siphon/fits.json, every player gets it at once) and
-    brings up the next car. The yellow dot is the car's petroltank bone, if it has one. A car without
-    one is fitted on one flank and the fit is mirrored to the side the player stands (as its guess was).
-
-    Models with the same body (baller4 and baller5: exactly the same size) share a fit: a car with no
-    fit of its own copies one from the same body instead of coming up (here and in /filler_autofit),
-    and saving a fit updates its copies. Fitting a copy by name makes it a fit of its own.
-
-        Arrows/WASD along the car (left / right, up / down)
-        Q / E       out of / into the car
-        Scroll      tilt up / down (also numpad 8 / 5)
-        Z / X       turn left / right (also numpad 4 / 6)
-        Shift       1 mm (and a quarter degree) a press instead of 5 mm
-        (held)      a move or turn key held down keeps going after a moment: 8 cm (12 degrees) a
-                    second, a fifth of that with Shift; tap for small steps
-        F           the other side of the car
-        C           wide view: the filler against the whole car
-        R           undo your changes (back to the saved fit, or the guess)
-        Enter       save, next car
-        Backspace   skip this car without saving
-        Esc         stop
-]]
+-- /filler_fitall [all | review | <model>] (dev mode; saving needs an admin)
+-- Models with the same body share a fit; fitting a copy by name makes it a fit of its own.
 
 local cfg = Config.siphon
 
@@ -38,36 +8,31 @@ if not cfg.enabled or not cfg.devMode then return end
 local FILLER = Siphon.rig.filler
 local KEY = { save = 191, skip = 194, stop = 200, wide = 26, reset = 45, side = 23 }
 local CLOSE = { pos = vec3(0.10, -0.40, 0.08), target = vec3(0.0, 0.0, 0.0), fov = 40.0 }
-local WIDE = 5.0 -- wide view: the camera this many times further out
+local WIDE = 5.0 -- times further out
 
 local running = false
-local scene   -- the filler, moved from car to car
-local spawned -- the car on screen
-local home    -- where the player stood
+local scene
+local spawned
+local home
 
 local function say(text)
     print('[filler fit] ' .. text)
 end
 
--- Shared with autofit.lua.
 Siphon.dev = Siphon.dev or {}
 local Dev = Siphon.dev
 
----Electric cars have no filler (the native needs game build 3258).
+-- the native needs game build 3258
 function Dev.isElectric(hash)
     local ok, electric = pcall(GetIsVehicleElectric, hash)
     return ok and electric == true
 end
 
--- Left out of the fitting runs, as in /lockpick_fitall (asking for one model by name still fits it, and
--- in game these cars still use their petroltank bone or the guess): the classes that can't be siphoned
--- (cfg.blockedClasses) and, not worth fitting, industrial (10), utility (11), service (17),
--- emergency (18), military (19), commercial (20) and open wheel (22).
+-- Can't be siphoned, or not worth fitting. Asking for a model by name still fits it.
 local SKIP_CLASS = { [10] = true, [11] = true, [17] = true, [18] = true, [19] = true, [20] = true, [22] = true }
 for class, blocked in pairs(cfg.blockedClasses) do SKIP_CLASS[class] = blocked or SKIP_CLASS[class] end
 
----Car models to fit, sorted, for which keep(model, savedFit) is true. Copies of another model's fit
----(same body) are left out: they follow that model (fitting one by name makes it its own).
+-- Copies of another model's fit are left out: they follow that model.
 function Dev.carModels(keep)
     return DevCars.models(SKIP_CLASS, function(model)
         local saved = Siphon.savedFits[model]
@@ -75,13 +40,11 @@ function Dev.carModels(keep)
     end)
 end
 
--- Same body ------------------------------------------------------------------------------------
--- Models with the same body (baller4 and baller5) are exactly the same size: the size to the mm is
--- the body's signature. A car without a fit of its own takes the fit of a model with the same body.
+-- Same-size models (baller4, baller5) share a body: its size to the mm is the signature.
 
-local sigs = {} -- model -> signature, worked out this session
+local sigs = {} -- model -> signature
 
----The model's body signature, or nil if it doesn't load.
+-- nil if the model doesn't load
 function Dev.signature(model)
     if sigs[model] then return sigs[model] end
     local saved = Siphon.savedFits[model]
@@ -107,7 +70,6 @@ function Dev.signature(model)
     return sigs[model]
 end
 
----A saved fit of another model with the same body: model, fit (its own fit's source, not a copy).
 function Dev.twin(model)
     local sig = Dev.signature(model)
     if not sig then return end
@@ -120,7 +82,6 @@ function Dev.twin(model)
     end
 end
 
----Saves `fit` for model on the server (with its body signature). Returns ok, err.
 function Dev.save(model, fit)
     fit.sig = Dev.signature(model)
     local ok, err = TR.callback.await('tr_minigames:siphon:saveFit', model, fit)
@@ -128,13 +89,11 @@ function Dev.save(model, fit)
     return ok, err
 end
 
----Copies source's fit to `model` (same body) and keeps the copies of `source` in step with it.
 local function copyOf(source, fit)
     return { x = fit.x, y = fit.y, z = fit.z, pitch = fit.pitch, yaw = fit.yaw, auto = fit.auto, check = fit.check,
         both = fit.both, from = source }
 end
 
----After saving source's own fit: every model copied from it gets the new one. Returns how many.
 function Dev.updateCopies(source)
     local fit, n = Siphon.savedFits[source], 0
     for model, saved in pairs(Siphon.savedFits) do
@@ -144,7 +103,6 @@ function Dev.updateCopies(source)
     return n
 end
 
----If a model with the same body has a fit, saves a copy of it for `model`. Returns the source model.
 function Dev.copyTwin(model)
     local source, fit = Dev.twin(model)
     if source and Dev.save(model, copyOf(source, fit)) then
@@ -153,7 +111,6 @@ function Dev.copyTwin(model)
     end
 end
 
----The car's petroltank bone (world), if it has one.
 function Dev.bone(vehicle)
     for _, name in ipairs({ 'petroltank', 'petroltank_l', 'petroltank_r' }) do
         local bone = GetEntityBoneIndexByName(vehicle, name)
@@ -161,21 +118,19 @@ function Dev.bone(vehicle)
     end
 end
 
----The filler as it looks shut: bezel, flap and cap.
 function Dev.spawnFiller(s)
     s:spawn('filler', 'tr_sf_filler')
     s:spawn('flap', 'tr_sf_flap', FILLER.flapHinge)
     s:spawn('fuelcap', 'tr_sf_fuelcap', FILLER.cap.seat, FILLER.cap.rot)
 end
 
----Car models to fit: unfitted ones, 'all', 'review' (auto fits marked for a look) or one model.
+-- arg: nil (not fitted yet), 'all', 'review' or a model
 local function models(arg)
     if arg == 'review' then return Dev.carModels(function(_, saved) return saved and saved.check end) end
     if arg and arg ~= 'all' then return { arg:lower() } end
     return Dev.carModels(function(_, saved) return arg == 'all' or not saved end)
 end
 
----Removes the car and the filler and gives the player back.
 local function cleanup()
     TR.ui.hud.hide()
     if spawned and DoesEntityExist(spawned) then DeleteEntity(spawned) end
@@ -224,12 +179,10 @@ local function hud(model, index, total, fit, source, wide, both)
     })
 end
 
----Fits one car. Returns 'saved', 'skipped' or 'stop'.
 local function fitOne(vehicle, model, index, total)
     local wide = false
-    local side = -1 -- where the guess goes on a car without a petroltank bone (F flips it)
+    local side = -1 -- F flips it
 
-    ---The fit shown: live, saved, from the config or the guess.
     local function shown()
         local fit, source = Siphon.fit(model)
         if fit then return fit, source end
@@ -279,7 +232,6 @@ local function fitOne(vehicle, model, index, total)
             wide = not wide
             aim()
         elseif IsDisabledControlJustPressed(0, KEY.save) then
-            -- Saved by hand: no longer marked for a check.
             local fit = shown()
             if fit then
                 local saving = { x = fit.x, y = fit.y, z = fit.z, pitch = fit.pitch, yaw = fit.yaw, both = not Dev.bone(vehicle) or nil }

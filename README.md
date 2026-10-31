@@ -4,8 +4,10 @@ Physical minigames for FiveM, each played by hand on its own custom 3D props: no
 skill-check circles. Players nearby see the props and particles and hear the sounds too.
 
 - **Hotwiring**: unscrew the steering column's cover, find the wires with a test light, strip them,
-  twist battery and ignition together and crank the starter.
+  twist battery and ignition together and crank the starter. On a motorcycle: pull the handlebar's switch
+  block apart, cut and strip the wires inside, twist them and press the start button.
 - **Lockpicking**: pick a car door's wafer lock with a Lishi-style pick, one wafer at a time, by feel.
+  Motorcycles have the same lock in an ignition on the top yoke.
 - **Siphoning**: set a jerry can down, open the car's filler, put the hoses in, blow the fuel up the
   hose puff by puff and let it run into the can.
 
@@ -73,6 +75,23 @@ tools, strikes and meters are drawn on the resource's own page (`TR.ui.hud`).
   within `Config.mirror.range` (`config.lua`). See `tr_core/modules/mirror`.
 - `/hotwire_rig <x> <y> <z> [pitch]` (dev mode) moves the column live, so you can fit it to a car's
   interior. Copy the printed line into `vehicleFits`.
+
+### On a motorcycle
+
+Sit on a bike you have no keys for and press **G**. The bars come straight and the camera goes to the
+right switch block:
+
+1. **Open it**: hold LMB on the lower half and pull the mouse down until the clips let go. It hangs on
+   its wires and loom.
+2. **Test light** (`1`): find battery (steady) and ignition (pulsing).
+3. **Strippers** (`2`): click a wire to cut it, then pull its end down slowly to strip it.
+4. **Hands** (`3`): twist battery and ignition together, push the half back up onto the bar until it
+   clicks, then hold the start button and let go in the green.
+
+The same rules, strikes and settings apply (`minBikeTime` is the shortest time a bike can take).
+Every stock motorcycle has a measured fit in `minigames/hotwire/bikes.lua`; on a bike,
+`/hotwire_rig` and `/hotwire_cam` (dev mode) print lines for `bikeFits`, which win over it.
+Bicycles, `excludeModels` (the Oppressors by default) and other vehicle types can't be hotwired.
 
 ## Lockpicking
 
@@ -145,6 +164,17 @@ click, so a modified client can't pick it faster than a person could. A car keep
   handle: back, up, out from the skin), so you can fit it to a car. Copy the printed line into
   `vehicleFits`. While picking in dev mode, the arrow keys (along the door) and Q / E
   (out/in) nudge it 5 mm a press and print the same line. `/lockpick_cam <x> <y> <z> <targetX> <targetY> <targetZ>` tunes the camera.
+
+### On a motorcycle
+
+Stand by the handlebars of a locked bike and press **G**. The player steps up beside
+the bars and the lock is an ignition housing on top of the yoke, in front of the tank, picked the
+same way as a door. Its place follows the bars when they are turned, and from the bike's right the
+view is mirrored. Bikes use vehicle class 8 in `classDifficulty` and `classAlarm`;
+`modelDifficulty` sets single models (it wins over the class).
+
+Every stock motorcycle is fitted in `fits.json`. `/lockpick_fitall bikes` (dev mode) brings up the
+bikes without a fit, `/lockpick_fitall bikes all` every bike, with the same keys as for cars.
 
 ## Siphoning
 

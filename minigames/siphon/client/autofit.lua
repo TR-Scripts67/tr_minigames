@@ -1,108 +1,55 @@
---[[
-    Fits the filler to every car by itself (dev mode; saving needs an admin).
-
-        /filler_autofit                 every car model that has no saved fit yet
-        /filler_autofit redo            also redo the ones fitted automatically before (not manual ones)
-        /filler_autofit all             the same as redo
-        /filler_autofit sultan          just this one
-        /filler_autofit compare         fits the cars fitted by hand again and says how far off it is
-                                        from each hand fit (and how far the guess was); saves nothing
-        /filler_autofit compare sultan  the same for one car
-        /filler_autofit sultan show     and show what it measured for 8 s (works with the others too)
-        /filler_forceauto               every car again, replacing the fits made by hand too (a car
-                                        that can't be fitted keeps its old fit)
-
-    Scripts only see a car's collision, which can sit centimetres inside or outside the paint, so this
-    measures what is drawn (engine/client/probe.lua). GTA's cars have no fuel door, so the filler goes
-    on plain paint where a filler usually is: on the car's petroltank bone, or where the body's rear
-    quarter says (also when the bone is in the car's middle, marked to check). Only one flank is
-    measured: the bone's, or the left one. A car without a bone gets
-    its fit mirrored to the side the player stands (`both`). Per car:
-
-    0. Without a bone: the doors, the boot lid and the glass come off (they're put back after), and a
-       wide map of the whole rear quarter, from in front of the rear wheel to the tail and from the
-       wheel's middle up, a sample every 5 cm or so (more apart on bigger cars). FillerMap.place
-       (fillermap.lua) finds the wheel arch's top (on a lifted body far over the tyre) and the
-       panel's top on it, and picks the place nearest where a filler usually is (over the back of
-       the wheel arch, 15 cm over it; if not there, further back sooner than further forward) where
-       the bezel and some room round it are on plain paint: never on the arch or its lip, a door, a
-       window or past the tail light, over the panel's top or facing the ground.
-       With a bone ahead of the rear wheel (a lorry's side tank, at its end or inside it; the tank
-       can be well inside the box its mirrors make, and collision can miss it): a wide map along the
-       tank instead, from the wheel behind it to the one ahead (at most 1.6 m from the bone), and
-       FillerMap.nearest picks the place in the middle of what the bone is on (the tank's face, not
-       its step, the cab or a wheel), as high as the place on it nearest the bone.
-    1. A coarse map round that place (or another bone), a sample every 28 mm, searched from just
-       outside the car's bounding box to 30 cm inside. With such a bone, if too little paint is
-       found there, the bezel sits well nowhere round it or the search ended short of the bone: a
-       wide map round the bone (1 m along, 90 cm up, searched to 30 cm past it), and
-       FillerMap.nearest picks the place nearest the bone on what it's on.
-    2. FillerMap.spots: where the paint under the bezel is whole and smooth, and doesn't curve so
-       much the bezel's rim would lift off it. None round a wide map's pick: on to the next pick.
-    3. A close look at the best spot: the bezel's disc and its rim, a few millimetres a sample, and a
-       ring of samples 2 cm round it (an opening, glass, a flare or a lip there shows), searched 6 mm
-       either side of the paint the coarse map has there. The bezel rests on it as a real one would
-       (DoorMap.seat). If it doesn't sit well there, the next spot (three at most), clear of what
-       was wrong (a body line found under one is kept off the next one's rim); then the wide map's
-       next best places (two more at most, 12 cm or more apart).
-
-    Each fit is saved like a manual one (minigames/siphon/fits.json). Fits it isn't sure about are
-    marked `check`: go through them with /filler_fitall review. Esc stops after the car on screen,
-    Backspace skips it. C zooms out: the run waits on the next fitted car, seen against the whole
-    car, until C is pressed again. Stand somewhere open: the camera goes up to 2.5 m out from the
-    car's side (2.7 m along a lorry's side tank).
-]]
+-- /filler_autofit [redo | all | compare | <model>] [show] and /filler_forceauto (dev mode; saving needs an admin)
+-- GTA's cars have no fuel door, so the filler goes on plain paint where a filler usually is.
+-- Stand somewhere open: the camera goes up to 2.5 m out from the car's side.
 
 local cfg = Config.siphon
 
 if not cfg.enabled or not cfg.devMode then return end
 
-local WIDE_POINTS = 440                 -- the wide map of the rear quarter: about this many samples
-local WIDE_STEP = 0.035                 -- at least this far apart
-local WIDE_DEEP = 0.45                  -- searched from just outside the bounding box to this far into it
-local WIDE_ROUNDS = 7                   -- binary search steps over that: under 4 mm
-local WIDE_FOV = 40.0                   -- its camera's view, top to bottom
-local BONE_U, BONE_V = 0.5, 0.45        -- the wide map round a bone (when the coarse map there doesn't do): this far along and up / down
-                                        -- from it (a round tank's outer face from a bone on its top or bottom)
+local WIDE_POINTS = 440                 -- about this many samples
+local WIDE_STEP = 0.035                 -- metres apart at least
+local WIDE_DEEP = 0.45                  -- metres into the bounding box
+local WIDE_ROUNDS = 7                   -- under 4 mm
+local WIDE_FOV = 40.0                   -- degrees, top to bottom
+local BONE_U, BONE_V = 0.5, 0.45        -- metres along and up / down from the bone
 local BONE_POINTS = 600                 -- about this many samples
-local TANK_REACH = 1.6                  -- a side tank (a bone ahead of the rear wheel): mapped along from the wheel behind it to the one
-                                        -- ahead (clear of their tyres), at most this far from the bone, to find its ends
-local TANK_STEP = 0.045                 -- a sample this far apart
-local PAST_BONE = 0.30                  -- searched from just outside the bounding box to this far past the bone (not past the car's middle)
-local GRAIN = 0.004                     -- in enough binary search steps to get under this
-local MAX_DOWN = 15.0                   -- the filler faces the ground at most this much (not on a round tank's lower half)
-local LIGHT = 0.20                      -- the filler's middle at least this far in front of the tail light
-local IN_WAY = 0.25                     -- this share of it hidden even outside the car's box: is something in the way?
-local HALF_U, HALF_V = 0.126, 0.098     -- the coarse map: this far along the car and up / down from the anchor
-local COARSE = 0.028                    -- its sample spacing
-local COARSE_ROUNDS = 11                -- binary search steps over its range: about a quarter of a millimetre
-local OUTSIDE = 0.02                    -- its search starts this far outside the bounding box
-local DEEP = 0.30                       -- and ends this far into the car from the collision
-local SEARCH_U, SEARCH_V = 0.07, 0.045  -- the filler's middle may move this far from the anchor
-local SURFACE = 0.09                    -- the paint round a spot is fitted to the coarse map this far round it
-local BEZEL = 0.053                     -- what the filler rests on: the bezel's radius and a millimetre
-local ROOM = 0.02                       -- plain paint at least this far round the bezel (from the arch's lip, a door, a window)
-local FINE = 0.009                      -- sample spacing under the bezel (and a ring of them round its rim)
-local WINDOW = 0.006                    -- searched this far either side of the paint the coarse map has there
-local FINE_ROUNDS = 6                   -- binary search steps over that: under a fifth of a millimetre
-local SPOTS = 3                         -- spots looked at closely, at most
-local APART = 0.012                     -- this far apart at least
-local STRAIGHT = 0.006                  -- a line found under one whose points are all this close to a straight line runs on along it
-local ON_PAINT = 0.0008                 -- the bezel's back this far out from the paint
-local UNEVEN = 0.003                    -- largest gap under the bezel's rim that's fine
-local MAX_PITCH, MAX_YAW = 45.0, 35.0   -- tilt / turn from square to the car's side it may have
-local CLOSE, WIDE = 1.6, 5.0            -- the preview camera this many times the fitter's distance
-local SHOWN = 400                       -- ms each fitted car is shown (zoomed out: until C)
+local TANK_REACH = 1.6                  -- metres from the bone along a side tank
+local TANK_STEP = 0.045                 -- metres apart
+local PAST_BONE = 0.30                  -- metres past the bone
+local GRAIN = 0.004                     -- metres: binary search steps until under this
+local MAX_DOWN = 15.0                   -- degrees facing the ground at most
+local LIGHT = 0.20                      -- metres in front of the tail light
+local IN_WAY = 0.25                     -- share hidden even outside the box: something is in the way
+local HALF_U, HALF_V = 0.126, 0.098     -- metres along / up from the anchor
+local COARSE = 0.028                    -- metres
+local COARSE_ROUNDS = 11                -- about a quarter of a millimetre
+local OUTSIDE = 0.02                    -- metres outside the bounding box
+local DEEP = 0.30                       -- metres into the car from the collision
+local SEARCH_U, SEARCH_V = 0.07, 0.045  -- metres the filler's middle may move from the anchor
+local SURFACE = 0.09                    -- metres
+local BEZEL = 0.053                     -- the bezel's radius and a millimetre
+local ROOM = 0.02                       -- metres of plain paint round the bezel
+local FINE = 0.009                      -- metres
+local WINDOW = 0.006                    -- metres either side of the coarse map's paint
+local FINE_ROUNDS = 6                   -- under a fifth of a millimetre
+local SPOTS = 3
+local APART = 0.012                     -- metres apart at least
+local STRAIGHT = 0.006                  -- metres off a straight line: a line found runs on along it
+local ON_PAINT = 0.0008                 -- metres out from the paint
+local UNEVEN = 0.003                    -- metres
+local MAX_PITCH, MAX_YAW = 45.0, 35.0   -- degrees from square
+local CLOSE, WIDE = 1.6, 5.0            -- times the fitter's distance
+local SHOWN = 400                       -- ms; zoomed out: until C
 local VIEW = { pos = vec3(0.10, -0.40, 0.08), target = vec3(0.0, 0.0, 0.0), fov = 40.0 }
 
 local running = false
-local show = false                      -- /filler_autofit <model> show: see what it measured
-local wide = false                      -- C: wait on the next fitted car, zoomed out on it, until C again
-local preview                           -- while a fit is shown: aims the camera at it (again after C)
-local status                            -- the run's progress on the HUD: { model, index, total, started, phase, holding }
-local spawnHeading                      -- the car's heading as spawned: its left flank faces the measuring spot
+local show = false
+local wide = false
+local preview
+local status
+local spawnHeading
 local slowDetail = 0                    -- cars in a row the game never said its close-up model was in for
-local fixedWait = false                 -- after three of those: a fixed wait instead
+local fixedWait = false
 
 local function say(text)
     print('[filler autofit] ' .. text)
@@ -116,7 +63,6 @@ end
 
 local function mm(m) return math.floor(m * 1000 + 0.5) end
 
----The run's progress, bottom middle: which car, how many are left and what it is doing.
 local function progress(phase)
     if not status then return end
     status.phase = phase or status.phase
@@ -163,13 +109,10 @@ local function drawThread()
     end)
 end
 
----How much of a step along this line of sight goes into the car (it's never quite square). `out`:
----out of the flank, in the world.
+-- A line of sight is never quite square to the flank. out: out of the flank, in the world.
 local function along(s, out) return math.max(0.5, -Vec.dot(s.dir, out)) end
 
----Every flank is measured from the same spot: the car turns so this flank faces where its left one
----did. From the other side of the car the light, the game's exposure and whatever stands there can
----keep the markers from reading. Returns `out` (out of the flank) in the world.
+-- From the other side the light, exposure and whatever stands there can keep the markers from reading.
 local function face(vehicle, side)
     spawnHeading = spawnHeading or GetEntityHeading(vehicle)
     local heading = (spawnHeading + (side > 0 and 180.0 or 0.0)) % 360.0
@@ -181,9 +124,7 @@ local function face(vehicle, side)
     return GetOffsetFromEntityInWorldCoords(vehicle, side * 1.0, 0.0, 0.0) - GetOffsetFromEntityInWorldCoords(vehicle, 0.0, 0.0, 0.0)
 end
 
----Takes the doors, the boot lid and the glass off while the car is measured: the filler never goes
----on a door or a window, and with them off their openings read as openings (a window can read as
----paint). SetVehicleFixed puts them back.
+-- With them off their openings read as openings (a window can read as paint). SetVehicleFixed puts them back.
 local function strip(vehicle)
     for door = 0, 5 do
         if door ~= 4 and GetIsDoorValid(vehicle, door) then SetVehicleDoorBroken(vehicle, door, true) end
@@ -193,7 +134,6 @@ local function strip(vehicle)
     Wait(0)
 end
 
----Where a bone of the car is, vehicle space; nil if it has none.
 local function boneAt(vehicle, name)
     local index = GetEntityBoneIndexByName(vehicle, name)
     if index == -1 then return end
@@ -201,9 +141,6 @@ local function boneAt(vehicle, name)
     return GetOffsetFromEntityGivenWorldCoords(vehicle, p.x, p.y, p.z)
 end
 
--- Showing what it measured ------------------------------------------------------------------------
-
----Draws `list` for `ms` (Esc and Backspace still work).
 local function hold(list, ms)
     Probe.drawList = list
     local stopAt = GetGameTimer() + ms
@@ -213,9 +150,7 @@ local function hold(list, ms)
     if Probe.skipAsked then error('skipped', 0) end
 end
 
----For tuning: the wide map, for 6 s. Green is the body's skin, orange something deeper (the tyre,
----the wheel well, a door opening), red nothing (or something in the way). Yellow is where a filler
----usually is on this body, white the place picked.
+-- Green skin, orange something deeper, red nothing, yellow where a filler usually is, white the place picked.
 local function showWide(vehicle, w)
     local list = {}
     local size = Probe.markerSize()
@@ -232,10 +167,7 @@ local function showWide(vehicle, w)
     hold(list, 6000)
 end
 
----For tuning: what it measured, for 8 s. The coarse map in green (paint) and red (none: a gap,
----the wheel arch); the bezel's samples where it went in green, red where the paint isn't there or
----stands out and orange under a gap at the rim. Yellow is where it started from (the bone or the
----wide map's pick), blue the spots it found, white where the filler went.
+-- Green paint, red none, orange a gap at the rim, yellow the start, blue the spots, white where the filler went.
 local function showMap(vehicle, f)
     local list = {}
     local function at(reference, u, v, h) return GetOffsetFromEntityInWorldCoords(vehicle, reference.x + f.side * h, u, v) end
@@ -262,12 +194,7 @@ local function showMap(vehicle, f)
     hold(list, 8000)
 end
 
--- Wide maps ------------------------------------------------------------------------------------
-
----Maps the flank on `side` wide, u0 to u1 along and v0 to v1 up (vehicle space): about opts.points
----samples, WIDE_STEP or more apart, searched from just outside the bounding box to opts.deep into
----it in opts.rounds steps. Returns { map, reference, side, holes, blocked, inWay } (inWay: why, if
----something stands between the camera and the car).
+-- Returns { map, reference, side, holes, blocked, inWay } (inWay: why something is between the camera and the car).
 local function mapWide(vehicle, side, u0, u1, v0, v1, opts)
     local outWorld = face(vehicle, side)
     local min, max = GetModelDimensions(GetEntityModel(vehicle))
@@ -275,8 +202,7 @@ local function mapWide(vehicle, side, u0, u1, v0, v1, opts)
     local step = math.max(WIDE_STEP, math.sqrt((u1 - u0) * (v1 - v0) / opts.points))
     local map = DoorMap.grid(u0, u1, v0, v1, step)
 
-    -- Seen square on from far enough out to take it all in. Its depths only need to be good to a few
-    -- millimetres, so the markers' reach isn't calibrated for this camera (it's about their size).
+    -- Depths only need to be good to a few mm here, so the markers' reach isn't calibrated for this camera.
     local reference = vec3(side * outer, (u0 + u1) * 0.5, (v0 + v1) * 0.5)
     local halfHeight = math.max((v1 - v0) * 0.5, (u1 - u0) * 0.5 / GetAspectRatio(false)) * 1.08
     local distance = halfHeight / math.tan(math.rad(WIDE_FOV * 0.5))
@@ -296,9 +222,7 @@ local function mapWide(vehicle, side, u0, u1, v0, v1, opts)
     Probe.measure(list, opts.rounds)
     Probe.toSurface(vehicle, list, reference, side)
 
-    -- Hidden even just outside the car's box: a part of the car sticks out there, or something
-    -- stands between the camera and the car (it's measured from up to 2.5 m out). If a lot are,
-    -- where they're hidden from says which.
+    -- Hidden even just outside the car's box: part of the car sticks out, or something stands in the way.
     local blocked, holes = {}, 0
     for _, s in ipairs(map.samples) do
         if s.blocked then blocked[#blocked + 1] = s elseif s.hole then holes = holes + 1 end
@@ -311,7 +235,6 @@ local function mapWide(vehicle, side, u0, u1, v0, v1, opts)
             between[#between + 1] = { world = s.world, dir = s.dir, sx = s.sx, sy = s.sy, lo = -far, hi = s.lo, far = far, start = s.lo }
         end
         Probe.measure(between, 5)
-        -- How far in front of where its search started each is hidden from (the search narrows lo and hi).
         local outside = {}
         for _, b in ipairs(between) do
             local out = b.blocked and b.far + b.start or b.mid and b.start - b.mid
@@ -326,20 +249,17 @@ local function mapWide(vehicle, side, u0, u1, v0, v1, opts)
     return { map = map, reference = reference, side = side, holes = holes, blocked = #blocked, inWay = inWay }
 end
 
----The rear quarter on `side`, mapped wide, and where on it the filler goes (FillerMap.place).
----`wheel`: Siphon.rearWheel. Returns { map, reference, side, place } (place nil and `why` if
----there's nowhere for it) and the looks it took.
+-- Returns { map, reference, side, place } (place nil and why if there's nowhere) and the looks it took.
 local function mapQuarter(vehicle, side, wheel)
     local stats = Probe.stats
     local looks0 = stats.looks
 
-    -- From in front of the rear wheel to the tail, from the wheel's middle to the top of the flank.
     local min, max = GetModelDimensions(GetEntityModel(vehicle))
     local u0, u1 = min.y + 0.02, math.min(max.y - 0.02, wheel.y + wheel.r + 0.1)
     local v0, v1 = wheel.z, math.min(max.z - 0.02, wheel.z + wheel.r + 1.0)
     local w = mapWide(vehicle, side, u0, u1, v0, v1, { points = WIDE_POINTS, deep = WIDE_DEEP, rounds = WIDE_ROUNDS, phase = 'Mapping the rear quarter' })
 
-    -- Not past the tail light (its bone is in the lamp; the lamp reaches forward round the corner).
+    -- Its bone is in the lamp, and the lamp reaches forward round the corner.
     local light = boneAt(vehicle, side < 0 and 'taillight_l' or 'taillight_r')
     local rearmost = light and light.y < wheel.y - wheel.r and light.y + LIGHT or nil
     w.place, w.why = FillerMap.place(w.map, { u = wheel.y, v = wheel.z, r = wheel.r }, {
@@ -350,7 +270,6 @@ local function mapQuarter(vehicle, side, wheel)
     return w, stats.looks - looks0
 end
 
----Where along the car (vehicle y) the wheels on `side` are.
 local function wheelsOn(vehicle, side)
     local list = {}
     for _, name in ipairs({ 'f', 'm1', 'm2', 'm3', 'r' }) do
@@ -363,14 +282,8 @@ local function wheelsOn(vehicle, side)
     return list
 end
 
----Round a petroltank bone off the car's middle (`bone`, vehicle space), mapped wide on its side, and
----the place on what it's on nearest it (FillerMap.nearest): for a lorry whose bone is at its side
----tank's end or inside it, and whose tank can be well inside the bounding box (the mirrors stick
----out much further), where collision may miss it. Searched to PAST_BONE past the bone. With `tank`
----(a side tank: the tyre's radius), along it from the wheel behind it to the one ahead, clear of
----their tyres and at most TANK_REACH from the bone, and the place in the tank's middle there.
----Returns { map, reference, side, place } (place nil and `why` if there's nowhere for it) and the
----looks it took.
+-- For a lorry whose bone is at its side tank's end or inside it, where collision may miss it.
+-- tank: the tyre's radius for a side tank. Returns as mapQuarter does.
 local function mapBone(vehicle, side, bone, tank)
     local stats = Probe.stats
     local looks0 = stats.looks
@@ -398,10 +311,7 @@ local function mapBone(vehicle, side, bone, tank)
     return w, stats.looks - looks0
 end
 
--- One flank ------------------------------------------------------------------------------------
-
----A line found under a bezel (a body line, a seam, a lip) runs on past what was seen of it: if
----its points lie along one straight line over 3 cm or more, that line ({ u, v, du, dv }), else nil.
+-- A line (body line, seam, lip) straight over 3 cm or more runs on: returns it as { u, v, du, dv }, else nil.
 local function straight(points)
     if #points < 2 then return end
     local mu, mv = 0.0, 0.0
@@ -422,18 +332,13 @@ local function straight(points)
     if hi - lo >= 0.03 then return { u = mu, v = mv, du = cu, dv = cv } end
 end
 
----Measures the flank on `side` round anchor (u, v; x: where the paint is, if known; name: what it
----is, for the log; known: what close looks round other places on this flank found, kept off and
----added to) and seats the filler on the best spot near it. Returns { fit, notes, sits, score,
----deepest } (deepest: how far from the car's middle the search ended) or nil and why.
+-- Returns { fit, notes, sits, score, deepest } (deepest: how far from the car's middle the search ended) or nil and why.
 local function fitFlank(vehicle, side, anchor)
     local started, stats = GetGameTimer(), Probe.stats
     local looks0, ms0, stale0, waits0, frames0, lost0 = stats.looks, stats.ms, stats.stale, stats.waits, stats.frames, stats.lost
     local outWorld = face(vehicle, side)
 
-    -- Where to look from: where the wide map found the paint, or where collision says it is (it's
-    -- often on it, sometimes some centimetres either way). The search runs from outside the
-    -- bounding box to well inside it, so the paint is found wherever it really is.
+    -- Collision is often on the paint, sometimes cm either way, so the search runs from outside the box to well inside.
     local out = vec3(side * 1.0, 0.0, 0.0)
     local min, max = GetModelDimensions(GetEntityModel(vehicle))
     local outer = side < 0 and -min.x or max.x
@@ -445,7 +350,6 @@ local function fitFlank(vehicle, side, anchor)
     Probe.aim(vehicle, reference + out * 0.9, reference, halfHeight)
     Probe.calibrate(GetOffsetFromEntityInWorldCoords(vehicle, side * (outer + 0.04), anchor.u, anchor.v))
 
-    -- 1. The coarse map.
     progress('Mapping the flank')
     local coarse = DoorMap.grid(anchor.u - HALF_U, anchor.u + HALF_U, anchor.v - HALF_V, anchor.v + HALF_V, COARSE)
     local outside = outer + OUTSIDE - side * x
@@ -459,8 +363,7 @@ local function fitFlank(vehicle, side, anchor)
     for _, s in ipairs(coarse.samples) do if s.h then found = found + 1 end end
     if found < #coarse.samples * 0.3 then return nil, ('found the paint at only %d of %d points'):format(found, #coarse.samples) end
 
-    -- 2. Where the bezel could go, best first. All of them: a line the close look finds rules out
-    -- the near ones, and the way past it is often a few worse ones further on.
+    -- All of them: a line the close look finds rules out the near ones, and the way past is often further on.
     local spots = FillerMap.spots(coarse, anchor, {
         halfU = SEARCH_U, halfV = SEARCH_V, radius = BEZEL, room = ROOM, count = math.huge, apart = 0.008, maxTilt = MAX_PITCH, maxTurn = MAX_YAW,
         uneven = UNEVEN,
@@ -472,12 +375,7 @@ local function fitFlank(vehicle, side, anchor)
         spots = { { u = anchor.u, v = anchor.v, distance = 0.0 } }
     end
 
-    -- 3. A close look at the best until the bezel sits well on one (SPOTS at most), with a ring
-    -- of samples ROOM round it for the room there. After one it doesn't, the next keeps clear of
-    -- what was wrong under or round that one: something standing out or no paint (an opening,
-    -- glass) ROOM from its rim, a line (a lip, a body line, a seam) from under it, and if what was
-    -- seen of it is straight, all along it (it runs on); where the rim lifted off a curve, from
-    -- under its rim.
+    -- After a spot the bezel doesn't sit on, the next keeps clear of what was wrong there.
     progress('Seating the filler')
     local known = anchor.known or { problems = {}, lines = {} }
     local cache, discRef, best, tried, problems, lines, looked = {}, nil, nil, 0, known.problems, known.lines, {}
@@ -510,9 +408,7 @@ local function fitFlank(vehicle, side, anchor)
             tried = tried + 1
             spot.h = height(spot.u, spot.v)
             discRef = discRef or vec3(reference.x + side * spot.h, anchor.u, anchor.v)
-            -- Each line of sight starts on the paint the coarse map has where it's aimed, so it meets
-            -- the paint there (from a flat plane, on a tilted panel, the rim's would land millimetres
-            -- off its circle). Its markers stop showing their reach past that.
+            -- Each line of sight starts on the coarse map's paint, so on a tilted panel the rim's land on their circle.
             local disc, new = FillerMap.disc(cache, anchor, spot, BEZEL, FINE, ROOM)
             local ready = Probe.prepare(vehicle, new, discRef,
                 function(s) return Probe.view.reach - WINDOW / along(s, outWorld) end,
@@ -584,16 +480,12 @@ local function fitFlank(vehicle, side, anchor)
     }
 end
 
----Seats the filler round a wide map's pick, or round its next best places if it doesn't sit well
----there (a curve or a line the wide map is too coarse to see); if nowhere round any of them is
----smooth, round the first all the same, to be checked. `where`: where the places are, for the log;
----`names`: what the first and the next picks are called. Returns the result, why if none and the
----pick it went on.
+-- A wide map is too coarse to see a curve or a line, so the next best places are tried; else the first, to be checked.
 local function fitPicks(vehicle, wide, where, names)
     local place, side = wide.place, wide.side
     local picks = { place }
     for _, other in ipairs(place.others) do picks[#picks + 1] = other end
-    local known = { problems = {}, lines = {} } -- what the close looks found: a body line runs on to the next pick too
+    local known = { problems = {}, lines = {} } -- a body line runs on to the next pick too
     local result, why, picked
     for k, pick in ipairs(picks) do
         if k > 1 then
@@ -610,20 +502,14 @@ local function fitPicks(vehicle, wide, where, names)
         if r and r.sits then break end
     end
     if not result then
-        -- Nowhere smooth round any of them: seated round the first all the same, to be checked.
         result, why = fitFlank(vehicle, side, { u = place.u, v = place.v, x = wide.reference.x + side * place.h, name = names[1] })
         picked = result and place
     end
     return result, why, picked
 end
 
--- One car --------------------------------------------------------------------------------------
-
----A side tank's bone `b` (vehicle space) on `side`: the tank mapped along from the wheel behind it to
----the one ahead (mapBone), the filler in its middle along the car, as high as the place on it nearest
----the bone. If nothing on it will do, on the paint round the bone, to be checked. Returns the fit,
----notes and the tank ({ lo, hi, middle, v, openLo, openHi, bone }, vehicle y and z; nil if its ends
----weren't found), or nil, why and the tank.
+-- Returns the fit, notes and the tank ({ lo, hi, middle, v, openLo, openHi, bone }; nil if its ends weren't found),
+-- or nil, why and the tank.
 local function fitTank(vehicle, b, boneName, side, wheel)
     local near, looks = mapBone(vehicle, side, b, wheel.r)
     if show then showWide(vehicle, near) end
@@ -650,7 +536,6 @@ local function fitTank(vehicle, b, boneName, side, wheel)
         why = near.why
     end
     if not result and not near.inWay then
-        -- Nothing on the tank: round the bone, to be checked.
         local r = fitFlank(vehicle, side, { u = b.y, v = b.z, name = 'bone' })
         if r then
             table.insert(r.notes, 1, ('nothing on the tank would do (%s): fitted round the %s bone'):format(why, boneName))
@@ -662,19 +547,13 @@ local function fitTank(vehicle, b, boneName, side, wheel)
     return result.fit, table.concat(result.notes, ', '), tank
 end
 
----Fits a car round its petroltank bone `b` (vehicle space, off the car's middle), on the bone's side:
----on the paint there if the bezel sits well on it. A bone ahead of the rear wheel is a lorry's side
----tank (no car's filler is): fitTank. Otherwise, if it's inside what it's on (too little paint round
----it, nothing smooth) or further into the bounding box than the search reached (it starts at the
----box, the mirrors stick out far, and collision can miss it): on the surface the bone is on, mapped
----wide round it (mapBone). Returns the fit and notes, or nil and why (and fitTank's tank).
+-- A bone ahead of the rear wheel is a lorry's side tank (no car's filler is).
 local function fitBone(vehicle, b, boneName)
     local side = b.x >= 0 and 1 or -1
     local wheel = Siphon.rearWheel(vehicle, side)
     if wheel and b.y > wheel.y + wheel.r then return fitTank(vehicle, b, boneName, side, wheel) end
     local result, why = fitFlank(vehicle, side, { u = b.y, v = b.z, name = 'bone' })
     -- What the bone is on is outward of it: a search that ended short of it may have found something
-    -- standing out in front of that instead (a step), or nothing.
     local short = result and result.deepest > side * b.x
     if result and result.sits and not short then return result.fit, table.concat(result.notes, ', ') end
     local trouble = not result and why
@@ -698,8 +577,7 @@ local function fitBone(vehicle, b, boneName)
             near.why, looks, near.holes, #near.map.samples, near.blocked))
     end
 
-    -- One the bezel sits well on; else the least bad, to be checked. A fit from a search that ended
-    -- short of the bone only if nothing came of the wide map.
+    -- A fit from a search that ended short of the bone only if nothing came of the wide map.
     local pick = result
     if other and (other.sits or not result or short or other.score <= result.score) then pick = other end
     if not pick then
@@ -713,10 +591,6 @@ local function fitBone(vehicle, b, boneName)
     return pick.fit, table.concat(pick.notes, ', ')
 end
 
----Fits one car. Its doors and glass come off for it (SetVehicleFixed puts them back). Returns the
----fit, notes and what the wide map found ({ wheel, archTop, panelTop, target, tail, picked }, vehicle
----space; with a side tank fitTank's tank, with another bone nil), or nil, why and that. If the bezel doesn't sit well round the wide map's
----pick (a curve or a line it's too coarse to see), it tries the next best places on it.
 local function fitCar(vehicle)
     local bone, boneName = Siphon.dev.bone(vehicle)
     local middle -- a bone in the car's middle: not where the filler goes on a flank (the hand fits say so)
@@ -729,11 +603,10 @@ local function fitCar(vehicle)
         middle = ('the %s bone is in the car\'s middle: placed by the rear quarter'):format(boneName)
     end
 
-    -- No bone: where the left flank's rear quarter says, mirrored to whichever side the player stands.
+    -- No bone: the left flank, mirrored to whichever side the player stands.
     local wheel = Siphon.rearWheel(vehicle, -1)
     if not wheel then return nil, 'no petroltank bone and no rear wheel to start from' end
-    -- If the wide map finds nowhere (its collision rays: before the doors come off). With a bone the
-    -- guess is the bone, in the middle here: no guess then.
+    -- Before the doors come off: its collision rays need them. With a bone there's no guess.
     local guess = not middle and Siphon.guessFit(vehicle, -1)
     strip(vehicle)
     local wide, looks = mapQuarter(vehicle, -1, wheel)
@@ -778,8 +651,7 @@ end
 
 Siphon.dev.fitCar = fitCar -- tests/probe.lua runs it on a made-up car
 
----Waits for the car's close-up model: the probe reads the depth of the model that's drawn. False
----if the game never said it was in.
+-- The probe reads the depth of the model that's drawn. False if the game never said it was in.
 local function closeUp(vehicle)
     if fixedWait or not RequestVehicleHighDetailModel or not IsVehicleHighDetail then
         Wait(700)
@@ -799,14 +671,11 @@ local function closeUp(vehicle)
         Wait(0)
     end
     slowDetail = 0
-    Wait(0) -- and drawn once
+    Wait(0)
     return true
 end
 
--- Comparing with the hand fits -------------------------------------------------------------------
-
----How far `fit` is from the hand fit (mirrored to its side if it's for both): { distance, along,
----up, out, tilt, turn }, metres and degrees.
+-- { distance, along, up, out, tilt, turn }, metres and degrees
 local function offBy(fit, hand)
     if hand.both and (hand.x >= 0) ~= (fit.x >= 0) then hand = Siphon.mirrorFit(hand) end
     local side = fit.x >= 0 and 1 or -1
@@ -848,8 +717,7 @@ local function summary(name, list)
         at(tilt, 0.5), at(turn, 0.5)))
 end
 
----Where a fit is on the rear quarter the wide map found (`quarter` from fitCar): tyre radii behind
----the wheel's middle, metres over the arch's top, under the panel's top and in front of the tail.
+-- Tyre radii behind the wheel's middle, metres over the arch's top, under the panel's top and in front of the tail.
 local function onQuarter(quarter, fit)
     local w = quarter.wheel
     return { behind = (w.y - fit.y) / w.r, over = fit.z - quarter.archTop, under = quarter.panelTop - fit.z, tail = fit.y - quarter.tail }
@@ -862,16 +730,12 @@ local function middle(list, key)
     return at(values, 0.5)
 end
 
--- The run --------------------------------------------------------------------------------------
-
 local function run(arg, compare, force)
     local Dev = Siphon.dev
     local list
     if force then
-        -- Every car, the fits made by hand too (copies follow their model's).
         list = Dev.carModels(function() return true end)
     elseif compare then
-        -- The fits made by hand (copies follow their model's).
         list = {}
         for model, fit in pairs(Siphon.savedFits) do
             if not fit.auto and not fit.from and (not arg or model == arg:lower()) then list[#list + 1] = model end
@@ -899,9 +763,9 @@ local function run(arg, compare, force)
     local scene, vehicle
     local fitted, checks, copied, failed, replaced = 0, 0, 0, {}, 0
     local named = compare or (not force and arg and arg ~= 'redo' and arg ~= 'all') -- by name: measured even with a twin
-    local unread = 0 -- cars in a row the game frame couldn't be read for
+    local unread = 0
     local started = GetGameTimer()
-    local against, guesses, hands = {}, {}, {} -- compare: how far off the new fits and the guesses are, where the hand fits are
+    local against, guesses, hands = {}, {}, {}
 
     local ok, err = pcall(function()
         for index, wanted in ipairs(list) do
@@ -916,12 +780,10 @@ local function run(arg, compare, force)
             if twin then copied = copied + 1 end
             vehicle = not twin and DevCars.spawn(wanted, home, heading) or nil
             spawnHeading = heading
-            -- The next car's model loads while this one is measured.
             local nextModel = list[index + 1] and joaat(list[index + 1])
             if nextModel and IsModelInCdimage(nextModel) then RequestModel(nextModel) end
 
             if twin then
-                -- copied
             elseif not vehicle then
                 failed[#failed + 1] = wanted .. ' (model did not load)'
             elseif Dev.isElectric(GetEntityModel(vehicle)) then
@@ -942,7 +804,6 @@ local function run(arg, compare, force)
                     unread = 0
                 else
                     if fit == 'stopped' then error(fit, 0) end
-                    -- Skipped, or the game frame couldn't be read for this car: on to the next one.
                     if fit ~= 'skipped' then unread = unread + 1 end
                     if unread >= 3 then error('three cars in a row could not be measured: ' .. tostring(fit), 0) end
                     fit, note = nil, tostring(fit)
@@ -985,15 +846,12 @@ local function run(arg, compare, force)
                     say(('%s: %s%s'):format(model, note, kept))
                 end
                 if compare and quarter and quarter.bone and own then
-                    -- A side tank: where the hand fit is along it (also when this car wasn't fitted).
                     local t = quarter
                     say(('  on the tank, the hand fit is %d mm from its back end and %d mm from its front end (%d%% of the way from the back; the tank %d mm long%s), %+d mm up from the height aimed at; the bone %+d mm along from it'):format(
                         mm(own.y - t.lo), mm(t.hi - own.y), math.floor((own.y - t.lo) / math.max(0.001, t.hi - t.lo) * 100 + 0.5), mm(t.hi - t.lo),
                         (t.openLo or t.openHi) and (', running on past the map ' .. (t.openLo and 'behind' or 'ahead')) or '',
                         mm(own.z - t.v), mm(t.bone.y - own.y)))
                 elseif compare and quarter and own then
-                    -- Where the hand fit is on this body, in the terms the wide map picks by (also
-                    -- when this car wasn't fitted).
                     local h = onQuarter(quarter, own)
                     hands[#hands + 1] = h
                     local p = quarter.picked and onQuarter(quarter, { y = quarter.picked.u, z = quarter.picked.v })
@@ -1003,7 +861,6 @@ local function run(arg, compare, force)
                 end
 
                 if shown then
-                    -- Show the result: a moment, or zoomed out until C.
                     local offset = vec3(fit.x, fit.y, fit.z)
                     if not scene then
                         scene = Scene.new(vehicle, offset, fit.pitch, fit.yaw)
@@ -1073,7 +930,7 @@ local function run(arg, compare, force)
     if #failed > 0 and not compare then say('fit those by hand with /filler_fitall <model>') end
 end
 
----Starts a run (`force`: /filler_forceauto), unless something's in the way.
+-- force: /filler_forceauto
 local function start(args, force)
     if running then return say('already running') end
     if Siphon.current then return say('finish siphoning first') end
@@ -1082,7 +939,6 @@ local function start(args, force)
         return say('needs the latest tr_core: ensure tr_core, then tr_minigames')
     end
 
-    -- `show` and `compare` can go anywhere; the other word picks the cars.
     local what, compare
     show = false
     for _, word in ipairs(args) do
@@ -1104,5 +960,5 @@ local function start(args, force)
 end
 
 RegisterCommand('filler_autofit', function(_, args) start(args, false) end, false)
--- Every car fitted again, the fits made by hand replaced too (the release's fits.json).
+-- Replaces the hand fits too (for the release's fits.json).
 RegisterCommand('filler_forceauto', function(_, args) start(args, true) end, false)
