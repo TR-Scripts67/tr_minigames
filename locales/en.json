@@ -214,5 +214,23 @@
         "hint_funnelout": "Pull the funnel out of the can (S, or drag up)",
         "hint_cancapon": "Cap the can",
         "hint_pickup": "Picking the can up"
+    },
+    "alerts": {
+        "lockpickAlarm": {
+            "title": "Car alarm",
+            "message": "A car alarm went off after someone tried the lock. Plate: {plate}"
+        },
+        "hotwireAlarm": {
+            "title": "Car alarm",
+            "message": "A car alarm went off after someone tried to hotwire it. Plate: {plate}"
+        },
+        "hotwired": {
+            "title": "Vehicle theft",
+            "message": "Someone hotwired a vehicle. Plate: {plate}"
+        },
+        "siphoned": {
+            "title": "Fuel theft",
+            "message": "Someone siphoned fuel from a vehicle. Plate: {plate}"
+        }
     }
 }

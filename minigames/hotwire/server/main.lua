@@ -82,6 +82,7 @@ local function fail(src, s)
         broke = TR.inventory.removeItem(src, cfg.item, 1)
     end
 
+    Alerts.send(src, 'hotwireAlarm', s.vehicle)
     TR.log.info('%s failed to hotwire %s', GetPlayerName(src), TR.keys.plate(s.vehicle))
     return broke
 end
@@ -259,11 +260,11 @@ local function crank(src, s, held)
     sessions[src] = nil
     wired[s.vehicle] = { roles = s.roles, stripped = s.stripped }
     Entity(s.vehicle).state:set('tr_hotwired', true, true)
-    if cfg.giveKeys then
+    -- Only some keys scripts (zyke_vehiclekeys) can run an engine without keys; the rest keep it off, so give them
+    if cfg.giveKeys or not TR.keys.startEngine(src, s.vehicle) then
         TR.keys.giveKeys(src, s.vehicle)
-    else
-        TR.keys.startEngine(src, s.vehicle) -- runs without keys where the keys script allows it
     end
+    Alerts.send(src, 'hotwired', s.vehicle)
     TR.log.info('%s hotwired %s', GetPlayerName(src), TR.keys.plate(s.vehicle))
 
     return 'started'

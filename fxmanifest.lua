@@ -6,7 +6,7 @@ use_experimental_fxv2_oal 'yes'
 name 'tr_minigames'
 author 'TR Scripts'
 description 'Physical minigames with custom 3D props'
-version '1.2.0'
+version '1.2.1'
 
 shared_scripts {
     '@tr_core/init.lua',
@@ -25,6 +25,7 @@ shared_scripts {
 
 server_scripts {
     'engine/server/vehicles.lua',
+    'engine/server/alerts.lua',
 
     'minigames/hotwire/server/main.lua',
 

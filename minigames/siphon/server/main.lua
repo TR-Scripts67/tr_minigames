@@ -268,6 +268,7 @@ TR.callback.register('tr_minigames:siphon:stop', function(src, spilled, spills)
     puddles(src, spills, missed)
     local plate = TR.keys.plate(s.vehicle)
     TriggerEvent('tr_minigames:siphon:siphoned', src, NetworkGetNetworkIdFromEntity(s.vehicle), plate, kept, missed)
+    Alerts.send(src, 'siphoned', s.vehicle)
     TR.log.info('%s siphoned %.1f l from %s (%.1f l spilled)', GetPlayerName(src), kept, plate, missed)
     return true, kept, canNow, missed
 end, {

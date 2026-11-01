@@ -18,7 +18,7 @@ Config.hotwire = {
     minRewireTime = 5, -- seconds, when the cover is already off
     minReconnectTime = 3, -- seconds, when the car was hotwired before
 
-    giveKeys = false, -- turn on with any keys script other than zyke_vehiclekeys
+    giveKeys = false, -- true: give keys with every keys script, not only the ones that need them
 
     screws = {
         turns = 4,

@@ -112,6 +112,7 @@ end
 
 local function alarm(src, s, reason)
     TriggerEvent('tr_minigames:lockpick:alarm', src, NetworkGetNetworkIdFromEntity(s.vehicle), GetEntityCoords(s.vehicle), reason)
+    Alerts.send(src, 'lockpickAlarm', s.vehicle)
 end
 
 local function snap(src, s)

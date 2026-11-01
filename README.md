@@ -65,9 +65,10 @@ tools, strikes and meters are drawn on the resource's own page (`TR.ui.hud`).
   only starts: no keys, and once its engine is off it has to be wired again. The cover stays off
   (`state.tr_hotwire_cover`), the wires stay found and stripped, and battery and ignition stay
   twisted, so wiring it again is only cranking the starter on the twist (`minReconnectTime`). After a
-  tr_minigames restart the server has forgotten the wires, so that attempt starts at the test light. With zyke_vehiclekeys the car runs without
-  keys (`TR.keys.startEngine`). The other supported keys scripts keep the engine off for players
-  without keys, so set `giveKeys = true` when you run one of those.
+  tr_minigames restart the server has forgotten the wires, so that attempt starts at the test light. That is with zyke_vehiclekeys, where the car
+  runs without keys (`TR.keys.startEngine`). The other supported keys scripts keep the engine off for
+  players without keys, so with those the hotwire gives keys by itself. `giveKeys = true` gives keys
+  with every keys script.
 - Without a keys script everyone "has keys", so only admins in `devMode` can hotwire.
 - Players near the car see the props and sparks and hear the sounds (quieter further away). The
   hotwiring player's client sends what changed about 10 times a second; the server keeps the latest
@@ -242,6 +243,26 @@ missed the can leaves a petrol puddle (it burns) that everyone nearby sees.
   `client/fitter.lua`. Fits are saved to `minigames/siphon/fits.json` and reach every player at once.
   Cars with the same body share a fit.
 - `/siphon_cam <x> <y> <z> <targetX> <targetY> <targetZ> [fov]` (dev mode) tunes the blowing camera.
+
+## Police alerts
+
+Alerts go through the server's dispatch script, which tr_core finds by itself (tk_dispatch, cd_dispatch3d,
+rcore_dispatch, core_dispatch, qs-dispatch, cd_dispatch, ps-dispatch, origen_police, lb-tablet). Without one,
+on-duty police get a notification and a blip.
+
+| Alert | When |
+|---|---|
+| `lockpickAlarm` | A car's alarm goes off at the lock: a snapped pick, or an armed alarm on a picked car |
+| `hotwireAlarm` | A failed hotwire sets the alarm off |
+| `hotwired` | A car is hotwired (25% chance as it ships) |
+| `siphoned` | A player finishes siphoning (20% chance as it ships) |
+
+Each one is in `police.alerts` in `config.lua`: on or off, the chance, the code, the priority, how big
+the area police see is, how long it stays on the map and the cooldown per car. `police.jobs` is who
+gets them. The text is under `alerts` in `locales/en.json`.
+
+For your own scripts: `AddEventHandler('tr_minigames:alert', function(src, kind, netId, plate) end)` on
+the server fires with each alert sent.
 
 ## License
 
